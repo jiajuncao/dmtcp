@@ -103,6 +103,9 @@ namespace dmtcp
                                  const void *key, uint32_t key_len,
                                  void *val, uint32_t *val_len);
 
+      void enableFastQuery();
+      void disableFastQuery();
+
     private:
       void startNewCoordinator(CoordinatorMode mode);
       void createNewConnToCoord(CoordinatorMode mode);

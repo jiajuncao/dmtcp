@@ -62,6 +62,18 @@ void dmtcp_CoordinatorAPI_EventHook(DmtcpEvent_t event, DmtcpEventData_t *data)
       CoordinatorAPI::restart();
       break;
 
+    case DMTCP_EVENT_REGISTER_NAME_SERVICE_DATA:
+      if (data->nameserviceInfo.isRestart) {
+        CoordinatorAPI::instance().enableFastQuery();
+      }
+      break;
+
+    case DMTCP_EVENT_REFILL:
+      if (data->refillInfo.isRestart) {
+        CoordinatorAPI::instance().disableFastQuery();
+      }
+      break;
+
     case DMTCP_EVENT_RESUME:
       CoordinatorAPI::instance().sendCkptFilename();
       break;
@@ -763,4 +775,22 @@ int CoordinatorAPI::sendQueryToCoordinator(const char *id,
   }
 
   return *val_len;
+}
+
+void CoordinatorAPI::enableFastQuery()
+{
+  int flag = 1;
+
+  JASSERT(_coordinatorSocket.isValid());
+  JASSERT(setsockopt(_coordinatorSocket.sockfd(), IPPROTO_TCP,
+          TCP_NODELAY, &flag, sizeof(flag)) == 0) (JASSERT_ERRNO);
+}
+
+void CoordinatorAPI::disableFastQuery()
+{
+  int flag = 0;
+
+  JASSERT(_coordinatorSocket.isValid());
+  JASSERT(setsockopt(_coordinatorSocket.sockfd(), IPPROTO_TCP,
+          TCP_NODELAY, &flag, sizeof(flag)) == 0) (JASSERT_ERRNO);
 }
