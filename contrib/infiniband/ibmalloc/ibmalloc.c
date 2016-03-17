@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <assert.h>
 
 #include "ibmalloc.h"
@@ -13,16 +14,22 @@
 
 #define NUM_SLOTS 1024
 
+struct raw_buf {
+  char *arena;
+  // List holding the pointers to chunks
+  char *addr_list;
+  struct list_elem elem;
+};
+
 // A list of fixed-size pre-allocated buffers
 struct fixed_size_buf {
+  // Actual list holding free chunks
   struct list buf_list;
-  // Actual memory
-  char *arena;
-  // Size of per buffer
+  // List of allocated buffers
+  struct list raw_buf_list;
+  // Size of the chunk
   size_t chunk_size;
-  // Addr to hold the list of pointers to each buffer
-  char *chunk_array_addr;
-  // Original number of elements
+  // Initial number of chunks
   size_t num_slots;
   // Number of expanded elements
   size_t num_expanded;
@@ -40,36 +47,24 @@ static struct fixed_size_buf lvl4;
 
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static void expand(struct fixed_size_buf *buf);
+
 // Allocate size bytes of memory from buf
 static void *alloc_from_buf(struct fixed_size_buf *buf, size_t size) {
   pthread_mutex_lock(&mutex);
-  // If there're remaining slots from the buffer, fetch one
-  if (list_size(&buf->buf_list) > 0) {
-    struct list_elem *e;
-    struct chunk_elem *chunk;
-
-    e = list_pop_front(&buf->buf_list);
-    chunk = list_entry(e, struct chunk_elem, elem);
-    *(size_t *)chunk->addr = size;
-
-    pthread_mutex_unlock(&mutex);
-
-    return (char *)chunk->addr + sizeof(size_t);
+  if (list_empty(&buf->buf_list)) {
+    expand(buf);
   }
-  // Otherwise, allocate new memory
-  else {
-    void *ret = malloc(size);
-    if (!ret) {
-      fprintf(stderr, "Cannot allocate memory\n");
-      return NULL;
-    }
+  struct list_elem *e;
+  struct chunk_elem *chunk;
 
-    buf->num_expanded++;
-    *(size_t *)ret = size;
-    pthread_mutex_unlock(&mutex);
+  e = list_pop_front(&buf->buf_list);
+  chunk = list_entry(e, struct chunk_elem, elem);
+  *(size_t *)chunk->addr = size;
 
-    return (char *)ret + sizeof(size_t);
-  }
+  pthread_mutex_unlock(&mutex);
+
+  return (char *)chunk->addr + sizeof(size_t);
 }
 
 void *ibmalloc(size_t size) {
@@ -91,24 +86,30 @@ void *ibmalloc(size_t size) {
 }
 
 static void free_from_buf(struct fixed_size_buf *buf, void *ptr) {
-  pthread_mutex_lock(&mutex);
-  // Memory is allocated from the static buffer, return to the list
-  if ((char *)ptr >= buf->arena &&
-      (char *)ptr < buf->arena + buf->chunk_size * buf->num_slots) {
-    size_t offset = ((char *)ptr - buf->arena) / buf->chunk_size;
-    struct chunk_elem *chunk =
-      (struct chunk_elem *)(buf->chunk_array_addr) + offset;
+  bool found = false;
+  struct list_elem *e;
 
-    list_push_front(&buf->buf_list, &chunk->elem);
-    pthread_mutex_unlock(&mutex);
-    return;
+  pthread_mutex_lock(&mutex);
+  for (e = list_begin(&buf->raw_buf_list);
+       e != list_end(&buf->raw_buf_list);
+       e = list_next(e)) {
+    struct raw_buf *rb = list_entry(e, struct raw_buf, elem);
+
+    if ((char *)ptr >= rb->arena &&
+        (char *)ptr < rb->addr_list) {
+      size_t offset = ((char *)ptr - rb->arena) / buf->chunk_size;
+      struct chunk_elem *chunk = (struct chunk_elem *)
+        (rb->addr_list) + offset;
+
+      list_push_front(&buf->buf_list, &chunk->elem);
+      found = true;
+      break;
+    }
   }
-  // Othersise, dynamically allcated, do a normal free()
-  else {
-    free(ptr);
-    buf->num_expanded--;
-    pthread_mutex_unlock(&mutex);
-    return;
+  pthread_mutex_unlock(&mutex);
+  if (!found) {
+    fprintf(stderr, "IBmalloc: unable to find the chunk during free\n");
+    exit(1);
   }
 }
 
@@ -130,42 +131,89 @@ void ibfree(void *ptr) {
   }
 }
 
-// Initialize a buffer with num_slots buffers of size chunk_size
-static void buf_init(struct fixed_size_buf *buf,
-                     size_t chunk_size, size_t num_slots) {
+static size_t pow(size_t n) {
+  size_t i = 0, rslt = 1;
+
+  for (; i < n; i++)
+    rslt *= 2;
+  return rslt;
+}
+
+void expand(struct fixed_size_buf *buf) {
+  size_t num_slots;
+  struct raw_buf *new_buf;
   size_t i;
 
-  list_init(&buf->buf_list);
-  buf->chunk_size = chunk_size;
-  buf->arena = (char *)malloc(buf->chunk_size * num_slots);
-  buf->chunk_array_addr =
-    (char *)malloc(num_slots * sizeof(struct chunk_elem));
-  buf->num_slots = num_slots;
-  buf->num_expanded = 0;
+  assert(list_empty(&buf->buf_list));
+  num_slots = buf->num_slots * pow(buf->num_expanded);
+  buf->num_expanded++;
+  new_buf = (struct raw_buf *)malloc(sizeof(struct raw_buf));
 
-  if (!buf->arena || !buf->chunk_array_addr) {
-    fprintf(stderr, "Unable to allocate memory\n");
+  if (new_buf == NULL) {
+    fprintf(stderr, "IBmalloc: unable to allocate new_buf\n");
     exit(1);
   }
 
-  for (i = 0; i < num_slots; i++) {
-    struct chunk_elem *chunk;
+  size_t size = num_slots *
+    (buf->chunk_size + sizeof(struct chunk_elem));
 
-    chunk = (struct chunk_elem *)
-            (buf->chunk_array_addr + i * sizeof(struct chunk_elem));
-    chunk->addr = buf->arena + buf->chunk_size * i;
+  new_buf->arena = (char *)mmap(NULL, size,
+      PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  if (new_buf->arena == NULL) {
+    fprintf(stderr, "IBmalloc: unable to mmap new arena\n");
+    exit(1);
+  }
+
+  new_buf->addr_list = new_buf->arena + num_slots * buf->chunk_size;
+
+  for (i = 0; i < num_slots; i++) {
+    struct chunk_elem *chunk = (struct chunk_elem *)
+      (new_buf->addr_list + i * sizeof(struct chunk_elem));
+
+    chunk->addr = new_buf->arena + i * buf->chunk_size;
     list_push_front(&buf->buf_list, &chunk->elem);
   }
+
+  list_push_back(&buf->raw_buf_list, &new_buf->elem);
+}
+
+
+// Initialize a buffer with num_slots buffers of size chunk_size
+static void buf_init(struct fixed_size_buf *buf,
+                     size_t chunk_size, size_t num_slots) {
+  list_init(&buf->buf_list);
+  list_init(&buf->raw_buf_list);
+  buf->chunk_size = chunk_size;
+  buf->num_slots = num_slots;
+  buf->num_expanded = 0;
+
+  expand(buf);
 }
 
 static void buf_fini(struct fixed_size_buf *buf) {
-  if (buf->num_expanded > 0 ||
-      list_size(&buf->buf_list) < buf->num_slots) {
-    fprintf(stderr, "IBmalloc: memory leak detected\n");
+  struct list_elem *e = list_begin(&buf->raw_buf_list);
+  size_t total_num_slots = 0;
+  size_t avail_num_slots = list_size(&buf->buf_list);
+  size_t x = 0;
+
+  while(e != list_end(&buf->raw_buf_list)) {
+    struct list_elem *w = e;
+    struct raw_buf *rb = list_entry(e, struct raw_buf, elem);
+    size_t cur_num_slots = buf->num_slots * pow(x++);
+    total_num_slots += cur_num_slots;
+    e = list_next(e);
+    list_remove(w);
+    assert(munmap(rb->arena,
+           cur_num_slots *
+           (buf->chunk_size + sizeof (struct chunk_elem))) == 0);
+    free(rb);
   }
 
-  free(buf->chunk_array_addr);
-  free(buf->arena);
+  if (total_num_slots != avail_num_slots) {
+    fprintf(stderr, "IBmalloc: memory leak detected: %zu %zu\n",
+            total_num_slots, avail_num_slots);
+  }
 }
 
 void ibmalloc_init() {
