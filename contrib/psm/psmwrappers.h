@@ -9,6 +9,8 @@
 #define _real_psm2_error_defer               NEXT_FNC(psm2_error_defer)
 #define _real_psm2_error_get_string          NEXT_FNC(psm2_error_get_string)
 
+#define _real_psm2_epid_nid                  NEXT_FNC(psm2_epid_nid)
+#define _real_psm2_epid_port                 NEXT_FNC(psm2_epid_port)
 #define _real_psm2_map_nid_hostname          NEXT_FNC(psm2_map_nid_hostname)
 #define _real_psm2_ep_num_devunits           NEXT_FNC(psm2_ep_num_devunits)
 #define _real_psm2_uuid_generate             NEXT_FNC(psm2_uuid_generate)
