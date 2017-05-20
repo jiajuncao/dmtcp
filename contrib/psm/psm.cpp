@@ -91,11 +91,12 @@ void PsmList::onEpConnect(psm2_ep_t ep, int num_of_epid,
   }
 }
 
-psm2_error_t onEpDisconnect(psm2_ep_t ep, int num_of_epaddr,
-                            const psm2_epaddr_t *array_of_epaddr,
-                            const int *array_of_epaddr_mask,
-                            psm2_error_t *array_of_errors,
-                            int64_t timeout) {
+psm2_error_t
+PsmList::onEpDisconnect(psm2_ep_t ep, int num_of_epaddr,
+                        const psm2_epaddr_t *array_of_epaddr,
+                        const int *array_of_epaddr_mask,
+                        psm2_error_t *array_of_errors,
+                        int64_t timeout) {
   psm2_error_t ret;
   psm2_ep_t realEp;
   vector<psm2_epaddr_t> realArrayEpAddr;
@@ -130,8 +131,8 @@ psm2_error_t onEpDisconnect(psm2_ep_t ep, int num_of_epaddr,
   return ret;
 }
 
-void epAddrSetLabel(psm2_epaddr_t epaddr,
-                    const char *epaddr_label_string) {
+void PsmList::epAddrSetLabel(psm2_epaddr_t epaddr,
+                             const char *epaddr_label_string) {
   map<psm2_ep_t, EpInfo>::iterator epIt;
   map<psm2_epaddr_t, psm2_epaddr_t>::iterator epAddrIt;
 
@@ -151,4 +152,42 @@ void epAddrSetLabel(psm2_epaddr_t epaddr,
       }
     }
   }
+}
+
+void PsmList::onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
+                       const struct psm2_optkey *opts,
+                       int numopts, psm2_mq_t mq) {
+  MqInfo mqInfo;
+
+  JASSERT(_mqList.find(mq) == _mqList.end());
+  JASSERT(!_isRestart);
+
+  mqInfo.ep = ep;
+  mqInfo.userMq = mqInfo.realMq = mq;
+  mqInfo.tag_order_mask = tag_order_mask;
+
+  if (numopts > 0) {
+    JWARNING(false).Text("optkey may not be fully supported for MQ");
+  }
+
+  for (int i = 0; i < numopts; i++) {
+    mqInfo.opts[opts[i].key] = *(uint64_t *)opts[i].value;
+  }
+
+  _mqList[mq] = mqInfo;
+}
+
+psm2_error_t PsmList::onMqFinalize(psm2_mq_t mq) {
+  psm2_error_t ret;
+  psm2_mq_t realMq;
+
+  JASSERT(_mqList.find(mq) != _mqList.end());
+  realMq = _mqList[mq].realMq;
+
+  ret = _real_psm2_mq_finalize(realMq);
+  if (ret == PSM2_OK) {
+    _mqList.erase(mq);
+  }
+
+  return ret;
 }

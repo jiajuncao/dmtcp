@@ -221,3 +221,84 @@ psm2_epaddr_setlabel(psm2_epaddr_t epaddr,
   PsmList::instance().epAddrSetLabel(epaddr, epaddr_label_string);
   DMTCP_PLUGIN_ENABLE_CKPT();
 }
+
+EXTERNC psm2_error_t
+psm2_mq_init(psm2_ep_t ep, uint64_t tag_order_mask,
+             const struct psm2_optkey *opts,
+             int numopts, psm2_mq_t *mq) {
+  psm2_error_t ret;
+  psm2_ep_t realEp;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  realEp = PsmList::instance().getRealEp(ep);
+  JASSERT(realEp != NULL);
+
+  ret = _real_psm2_mq_init(realEp, tag_order_mask, opts, numopts, mq);
+  if (ret == PSM2_OK) {
+    PsmList::instance().onMqInit(ep, tag_order_mask, opts, numopts, *mq);
+  }
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
+  return ret;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_finalize(psm2_mq_t mq) {
+  psm2_error_t ret;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  ret = PsmList::instance().onMqFinalize(mq);
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
+  return ret;
+}
+
+EXTERNC void
+psm2_mq_get_stats(psm2_mq_t mq, psm2_mq_stats_t *stats) {
+  psm2_mq_t realMq;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  realMq = PsmList::instance().getRealMq(mq);
+  JASSERT(realMq != NULL);
+  _real_psm2_mq_get_stats(realMq, stats);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+}
+
+EXTERNC psm2_error_t
+psm2_mq_getopt(psm2_mq_t mq, int option, void *value) {
+  psm2_error_t ret;
+  psm2_mq_t realMq;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  realMq = PsmList::instance().getRealMq(mq);
+  JASSERT(realMq != NULL);
+
+  ret = _real_psm2_mq_getopt(realMq, option, value);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_setopt(psm2_mq_t mq, int option, const void *value) {
+  psm2_error_t ret;
+  psm2_mq_t realMq;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  realMq = PsmList::instance().getRealMq(mq);
+  JASSERT(realMq != NULL);
+
+  ret = _real_psm2_mq_setopt(realMq, option, value);
+  if (ret == PSM2_OK) {
+    PsmList::instance().setMqOpt(mq, option, value);
+  }
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
