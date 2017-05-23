@@ -34,7 +34,9 @@ psm2_error_register_handler(psm2_ep_t ep,
                             const psm2_ep_errhandler_t errhandler) {
   psm2_error_t ret;
   DMTCP_PLUGIN_DISABLE_CKPT();
-  ret = PsmList::instance().errorRegisterHandler(ep, errhandler);
+  JASSERT(ep != NULL);
+  ret = _real_psm2_error_register_handler(((EpInfo *)ep)->realEp,
+                                          errhandler);
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }
@@ -119,11 +121,13 @@ psm2_ep_open(const psm2_uuid_t unique_job_key,
              psm2_ep_t *ep,
              psm2_epid_t *epid) {
   psm2_error_t ret;
+  psm2_ep_t realEp;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
-  ret = _real_psm2_ep_open(unique_job_key, opts, ep, epid);
+  ret = _real_psm2_ep_open(unique_job_key, opts, &realEp, epid);
   if (ret == PSM2_OK) {
-    PsmList::instance().onEpOpen(unique_job_key, *opts, *ep, *epid);
+    *ep = PsmList::instance().onEpOpen(unique_job_key,
+                                       *opts, realEp, *epid);
   }
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
@@ -134,12 +138,11 @@ psm2_ep_epid_share_memory(psm2_ep_t ep,
                           psm2_epid_t epid,
                           int *result) {
   psm2_error_t ret;
-  psm2_ep_t realEp;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
-  realEp = PsmList::instance().getRealEp(ep);
-  ret = _real_psm2_ep_epid_share_memory(realEp, epid, result);
   JWARNING(false).Text("Wrapper is not fully implemented");
+  ret = _real_psm2_ep_epid_share_memory(((EpInfo *)ep)->realEp,
+                                        epid, result);
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }
@@ -149,7 +152,10 @@ psm2_ep_close(psm2_ep_t ep, int mode, int64_t timeout) {
   psm2_error_t ret;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
-  ret = PsmList::instance().onEpClose(ep, mode, timeout);
+  ret = _real_psm2_ep_close(((EpInfo *)ep)->realEp, mode, timeout);
+  if (ret == PSM2_OK) {
+    PsmList::instance().onEpClose(ep);
+  }
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }
@@ -163,20 +169,41 @@ psm2_ep_connect(psm2_ep_t ep,
                 psm2_epaddr_t *array_of_epaddr,
                 int64_t timeout) {
   psm2_error_t ret;
-  psm2_ep_t realEp;
+  EpInfo *epInfo;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
-  realEp = PsmList::instance().getRealEp(ep);
-  JASSERT(realEp != NULL);
-  ret = _real_psm2_ep_connect(realEp, num_of_epid, array_of_epid,
-                              array_of_epid_mask, array_of_errors,
-                              array_of_epaddr, timeout);
+
+  JASSERT(ep != NULL);
+  JASSERT(!PsmList::instance().isRestart());
+
+  epInfo = (EpInfo *)ep;
+
+  ret = _real_psm2_ep_connect(epInfo->realEp, num_of_epid,
+                              array_of_epid, array_of_epid_mask,
+                              array_of_errors, array_of_epaddr,
+                              timeout);
   if (ret == PSM2_OK) {
-    PsmList::instance().onEpConnect(ep, num_of_epid,
-                                    array_of_epid,
-                                    array_of_epid_mask,
-                                    array_of_epaddr, timeout);
+    EpConnLog connLog;
+
+    // TODO: Support multiple connect calls.
+    JASSERT(epInfo->connLog.size() < 1)
+    .Text("Currently connect can be called once only");
+
+    connLog.timeout = timeout;
+
+    for (int i = 0; i < num_of_epid; i++) {
+      if (array_of_epid_mask == NULL ||
+          array_of_epid_mask[i] != 0) {
+        connLog.epIds[array_of_epid[i]] = array_of_epid[i];
+        epInfo->remoteEpsAddr[array_of_epaddr[i]] = array_of_epaddr[i];
+      }
+    }
+
+    if (connLog.epIds.size() > 0) {
+      epInfo->connLog.push_back(connLog);
+    }
   }
+
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }
@@ -187,12 +214,39 @@ psm2_ep_disconnect(psm2_ep_t ep, int num_of_epaddr,
                    const int *array_of_epaddr_mask,
                    psm2_error_t *array_of_errors, int64_t timeout) {
   psm2_error_t ret;
+  EpInfo *epInfo;
+  vector<psm2_epaddr_t> realArrayEpAddr;
+  size_t num = 0;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
-  ret = PsmList::instance().onEpDisconnect(ep, num_of_epaddr,
-                                           array_of_epaddr,
-                                           array_of_epaddr_mask,
-                                           array_of_errors, timeout);
+
+  JASSERT(ep != NULL);
+  epInfo = (EpInfo *)ep;
+
+  for ( int i = 0; i < num_of_epaddr; i++) {
+    if (array_of_epaddr_mask == NULL ||
+        array_of_epaddr_mask[i] != 0) {
+      JASSERT(epInfo->remoteEpsAddr.find(array_of_epaddr[i]) !=
+              epInfo->remoteEpsAddr.end());
+      realArrayEpAddr.push_back(epInfo->remoteEpsAddr[array_of_epaddr[i]]);
+      epInfo->remoteEpsAddr.erase(array_of_epaddr[i]);
+      num++;
+    }
+    else {
+      realArrayEpAddr.push_back(array_of_epaddr[i]);
+    }
+  }
+
+  JASSERT(epInfo->connLog.size() == 1);
+  JASSERT(num == epInfo->connLog[0].size());
+
+  epInfo->connLog.clear();
+
+  ret = _real_psm2_ep_disconnect(epInfo->realEp,
+                                 num_of_epaddr, &realArrayEpAddr[0],
+                                 array_of_epid_mask, array_of_errors,
+                                 timeout);
+
   DMTCP_PLUGIN_ENABLE_CKPT();
 
   return ret;
@@ -201,13 +255,11 @@ psm2_ep_disconnect(psm2_ep_t ep, int num_of_epaddr,
 EXTERNC
 psm2_error_t psm2_poll(psm2_ep_t ep) {
   psm2_error_t ret;
-  psm2_ep_t realEp;
 
+  JASSERT(ep != NULL);
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  realEp = PsmList::instance().getRealEp(ep);
-  JASSERT(realEp != NULL);
-  ret = _real_psm2_poll(realEp);
+  ret = _real_psm2_poll(((EpInfo *)ep)->realEp);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
 
@@ -227,17 +279,20 @@ psm2_mq_init(psm2_ep_t ep, uint64_t tag_order_mask,
              const struct psm2_optkey *opts,
              int numopts, psm2_mq_t *mq) {
   psm2_error_t ret;
-  psm2_ep_t realEp;
+  psm2_mq_t realMq;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  realEp = PsmList::instance().getRealEp(ep);
-  JASSERT(realEp != NULL);
+  JASSERT(ep != NULL);
 
-  ret = _real_psm2_mq_init(realEp, tag_order_mask, opts, numopts, mq);
+  ret = _real_psm2_mq_init(((EpInfo *)ep)->realEp,
+                           tag_order_mask,
+                           opts, numopts, &realMq);
   if (ret == PSM2_OK) {
-    PsmList::instance().onMqInit(ep, tag_order_mask, opts, numopts, *mq);
+    *mq = PsmList::instance().onMqInit(ep, tag_order_mask,
+                                       opts, numopts, realMq);
   }
+
   DMTCP_PLUGIN_ENABLE_CKPT();
 
   return ret;
@@ -249,7 +304,11 @@ psm2_mq_finalize(psm2_mq_t mq) {
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  ret = PsmList::instance().onMqFinalize(mq);
+  ret = _real_psm2_mq_finalize(((MqInfo *)mq)->realMq);
+  if (ret == PSM2_OK) {
+    PsmList::instance().onMqFinalize(mq);
+  }
+
   DMTCP_PLUGIN_ENABLE_CKPT();
 
   return ret;
@@ -257,13 +316,11 @@ psm2_mq_finalize(psm2_mq_t mq) {
 
 EXTERNC void
 psm2_mq_get_stats(psm2_mq_t mq, psm2_mq_stats_t *stats) {
-  psm2_mq_t realMq;
+  JASSERT(mq != NULL);
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  realMq = PsmList::instance().getRealMq(mq);
-  JASSERT(realMq != NULL);
-  _real_psm2_mq_get_stats(realMq, stats);
+  _real_psm2_mq_get_stats(((MqInfo *)mq)->realMq, stats);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
 }
@@ -271,14 +328,12 @@ psm2_mq_get_stats(psm2_mq_t mq, psm2_mq_stats_t *stats) {
 EXTERNC psm2_error_t
 psm2_mq_getopt(psm2_mq_t mq, int option, void *value) {
   psm2_error_t ret;
-  psm2_mq_t realMq;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  realMq = PsmList::instance().getRealMq(mq);
-  JASSERT(realMq != NULL);
+  JASSERT(mq != NULL);
 
-  ret = _real_psm2_mq_getopt(realMq, option, value);
+  ret = _real_psm2_mq_getopt(((MqInfo *)mq)->realMq, option, value);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
@@ -287,16 +342,16 @@ psm2_mq_getopt(psm2_mq_t mq, int option, void *value) {
 EXTERNC psm2_error_t
 psm2_mq_setopt(psm2_mq_t mq, int option, const void *value) {
   psm2_error_t ret;
-  psm2_mq_t realMq;
+  MqInfo *mqInfo;
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  realMq = PsmList::instance().getRealMq(mq);
-  JASSERT(realMq != NULL);
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
 
-  ret = _real_psm2_mq_setopt(realMq, option, value);
+  ret = _real_psm2_mq_setopt(mqInfo->realMq, option, value);
   if (ret == PSM2_OK) {
-    PsmList::instance().setMqOpt(mq, option, value);
+    mqInfo->opts[option] = *(uint64_t *)value;
   }
 
   DMTCP_PLUGIN_ENABLE_CKPT();

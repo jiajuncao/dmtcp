@@ -14,14 +14,9 @@ namespace dmtcp
     int64_t timeout;
   } EpConnLog;
 
-  // Real resources are equal to user resources before ckpt, different after restart
-  // Currently only one EP per process is supported, therefore we use the struct
-  // instead of a pointer to it in the list: modification of the list is very limited.
-  // The same idea applies to the connLog field of EpInfo. Although multiple calls to
-  // ep connect are allowed, most applications call it once only. We support the single
-  // call for now.
+  // Although multiple calls to ep connect are allowed, most applications
+  // call it once only. We support the single call for now.
   typedef struct EpInfo {
-    psm2_ep_t userEp;
     psm2_ep_t realEp;
     psm2_epid_t userEpId;
     psm2_epid_t realEpId;
@@ -42,7 +37,6 @@ namespace dmtcp
   } RecvReq;
 
   typedef struct MqInfo {
-    psm2_mq_t userMq;
     psm2_mq_t realMq;
     psm2_ep_t ep;
     uint64_t tag_order_mask;
@@ -71,63 +65,27 @@ namespace dmtcp
 
       // General operations
       void init(int major, int minor);
-      void setNumUnits(int numUnits) {
-        _numUnits = numUnits;
-      }
-      psm2_error_t
-      errorRegisterHandler(psm2_ep_t ep,
-                           const psm2_ep_errhandler_t errhandler);
+      void setNumUnits(int numUnits) { _numUnits = numUnits; }
+      bool isRestart() { return _isRestart; }
 
       // Endpoint operations
-      void onEpOpen(const psm2_uuid_t unique_job_key,
-                    const struct psm2_ep_open_opts opts,
-                    psm2_ep_t ep,
-                    psm2_epid_t epid);
-      psm2_error_t onEpClose(psm2_ep_t ep, int mode, int64_t timeout);
-      void onEpConnect(psm2_ep_t ep, int num_of_epid,
-                       const psm2_epid_t *array_of_epid,
-                       const int *array_of_epid_mask,
-                       psm2_epaddr_t *array_of_epaddr,
-                       int64_t timeout);
-      psm2_error_t onEpDisconnect(psm2_ep_t ep, int num_of_epaddr,
-                                  const psm2_epaddr_t *array_of_epaddr,
-                                  const int *array_of_epaddr_mask,
-                                  psm2_error_t *array_of_errors,
-                                  int64_t timeout);
-      psm2_ep_t getRealEp(psm2_ep_t userEp) {
-        if (!_isRestart) {
-          return userEp;
-        }
-        if (_epList.find(userEp) == _epList.end()) {
-          return NULL;
-        }
-        return _epList[userEp].realEp;
-      }
+      psm2_ep_t onEpOpen(const psm2_uuid_t unique_job_key,
+                         const struct psm2_ep_open_opts opts,
+                         psm2_ep_t ep,
+                         psm2_epid_t epid);
+      void onEpClose(psm2_ep_t ep);
       void epAddrSetLabel(psm2_epaddr_t epaddr,
                           const char *epaddr_label_string);
 
       // Message queue operations
-      void onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
-                    const struct psm2_optkey *opts,
-                    int numopts, psm2_mq_t mq);
-      psm2_error_t onMqFinalize(psm2_mq_t mq);
-      psm2_mq_t getRealMq(psm2_mq_t userMq) {
-        if (!_isRestart) {
-          return userMq;
-        }
-        if (_mqList.find(userMq) == _mqList.end()) {
-          return NULL;
-        }
-        return _mqList[userMq].realMq;
-      }
-      void setMqOpt(psm2_mq_t, int option, const void *value) {
-        JASSERT(_mqList.find(mq) != _mqList.end());
-        _mqList[mq].opts[option] = *(uint64_t *)value;
-      }
+      psm2_mq_t onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
+                         const struct psm2_optkey *opts,
+                         int numopts, psm2_mq_t mq);
+      void onMqFinalize(psm2_mq_t mq);
 
     private:
-      map<psm2_ep_t, EpInfo> _epList;
-      map<psm2_mq_t, MqInfo> _mqList;
+      vector<EpInfo*> _epList;
+      vector<MqInfo*> _mqList;
       int _apiVernoMajor;
       int _apiVernoMinor;
       bool _initialized;
