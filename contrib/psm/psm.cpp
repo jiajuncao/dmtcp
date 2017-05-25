@@ -93,6 +93,8 @@ psm2_mq_t PsmList::onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
   mqInfo->realMq = mq;
   mqInfo->tag_order_mask = tag_order_mask;
 
+  mqInfo->sendsPosted = mqInfo->ReqCompleted = 0;
+
   if (numopts > 0) {
     JWARNING(false).Text("optkey may not be fully supported for MQ");
   }

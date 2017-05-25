@@ -9,14 +9,14 @@
 
 namespace dmtcp
 {
-  typedef struct EpConnLog {
+  typedef struct {
     map<psm2_epid_t, psm2_epid_t> epIds; // Useful only on restart
     int64_t timeout;
   } EpConnLog;
 
   // Although multiple calls to ep connect are allowed, most applications
   // call it once only. We support the single call for now.
-  typedef struct EpInfo {
+  typedef struct {
     psm2_ep_t realEp;
     psm2_epid_t userEpId;
     psm2_epid_t realEpId;
@@ -26,7 +26,8 @@ namespace dmtcp
     vector<EpConnLog> connLog;
   } EpInfo;
 
-  typedef struct RecvReq {
+  // Log entry to record a single irecv2 request
+  typedef struct {
     psm2_epaddr_t src;
     void *buf;
     void *context;
@@ -36,13 +37,58 @@ namespace dmtcp
     uint32_t len;
   } RecvReq;
 
-  typedef struct MqInfo {
+  typedef struct {
+    psm2_epaddr_t src;
+    psm2_mq_tag_t stag;
+    void *buf;
+    uint32_t len;
+  } UnexpectedMsg;
+
+  // For an improbe2 request, we only need to record
+  // the request, and where we are going to store the
+  // data, if the request is not received by imrecv()
+  // at checkpoint time.
+  typedef struct {
+    void *buf;
+    uint32_t len;
+  } ProbeReq;
+
+  typedef struct {
     psm2_mq_t realMq;
     psm2_ep_t ep;
     uint64_t tag_order_mask;
     // Only uint32_t is used in the source code, but we use 64 bits for safety
     map<uint32_t, uint64_t> opts;
-    map<psm2_mq_req_t, RecvReq> recvReqLog; // Used to trace the recv requests
+    // Used to trace the recv requests, unmatched requests need to be reposted
+    // on restart
+    map<psm2_mq_req_t, RecvReq> recvReqLog;
+    // Used to trace improbe requests, so that unreceived requests will not be lost
+    // on restart.
+    map<psm2_mq_req_t, ProbeReq> improbeReqLog;
+    // Internal completion queue, used to drain finished requests at checkpoint
+    // time, including both send and recv requests.
+    map<psm2_mq_req_t, psm2_mq_status_t> internalCq;
+    // Internal unexpected message queue, used to drain the PSM2 unexpected queue
+    // at checkpoint time.
+    map<psm2_mq_req_t, UnexpectedMsg> unexpectedQueue;
+    // Initially, we wanted to make sure that the following is true at checkpoint time:
+    //
+    // number of local sends posted == number of local sends completed
+    // total number of sends completed == total number of recvs completed
+    //
+    // However, for PSM, when a non-blocking request is completed (via test/wait),
+    // it is difficult for us to tell whether it is a send request or a recv request.
+    // Therefore, we use a different mechanism to eusure that the network is drained:
+    //
+    // (total number of sends posted) * 2 == total number of all requests completed
+    //
+    // The above is based on the fact that for a correct program, there is exactly
+    // one recv corresponding to one send. Hence each posted sends corresponds to
+    // exactly two completions: one local send completion, and one remote recv
+    // completion (support for blocking sends is trivial to add to satisfy the above
+    // equation).
+    uint32_t sendsPosted;
+    uint32_t ReqCompleted;
   } MqInfo;
 
   class PsmList {
