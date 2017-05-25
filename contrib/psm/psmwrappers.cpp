@@ -7,6 +7,8 @@
 
 using namespace dmtcp;
 
+/* PSM2 general operations */
+
 EXTERNC psm2_error_t
 psm2_init(int *api_verno_major, int *api_verno_minor) {
   psm2_error_t ret;
@@ -105,6 +107,8 @@ psm2_uuid_generate(psm2_uuid_t uuid_out) {
   _real_psm2_uuid_generate(uuid_out);
   DMTCP_PLUGIN_ENABLE_CKPT();
 }
+
+/* PSM2 endpoint operations */
 
 EXTERNC psm2_error_t
 psm2_ep_open_opts_get_defaults(struct psm2_ep_open_opts *opts) {
@@ -274,6 +278,8 @@ psm2_epaddr_setlabel(psm2_epaddr_t epaddr,
   DMTCP_PLUGIN_ENABLE_CKPT();
 }
 
+/* PSM2 message queue operations */
+
 EXTERNC psm2_error_t
 psm2_mq_init(psm2_ep_t ep, uint64_t tag_order_mask,
              const struct psm2_optkey *opts,
@@ -358,6 +364,7 @@ psm2_mq_setopt(psm2_mq_t mq, int option, const void *value) {
   return ret;
 }
 
+// Common operations for send2 and isend2
 static psm2_error_t
 internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
                  uint32_t flags, psm2_mq_tag_t *stag,
@@ -432,4 +439,67 @@ psm2_mq_isend2(psm2_mq_t mq, psm2_epaddr_t dest,
   DMTCP_PLUGIN_ENABLE_CKPT();
 
   return ret;
+}
+
+/* Unsupported operations
+ *
+ * We currently do not support the functionalities
+ * compatible with PSM 1.0
+ *
+ * */
+
+EXTERNC psm2_error_t
+psm2_mq_irecv(psm2_mq_t mq, uint64_t rtag, uint64_t rtagsel,
+              uint32_t flags, void *buf, uint32_t len,
+              void *context, psm2_mq_req_t *req) {
+  JASSERT(false).Text("Please use psm2_mq_irecv2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_send(psm2_mq_t mq, psm2_epaddr_t dest, uint32_t flags,
+             uint64_t stag, const void *buf, uint32_t len) {
+  JASSERT(false).Text("Please use psm2_mq_send2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_isend(psm2_mq_t mq, psm2_epaddr_t dest, uint32_t flags,
+              uint64_t stag, const void *buf, uint32_t len,
+              void *context, psm2_mq_req_t *req) {
+  JASSERT(false).Text("Please use psm2_mq_isend2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_iprobe(psm2_mq_t mq, uint64_t rtag, uint64_t rtagsel,
+               psm2_mq_status_t *status) {
+  JASSERT(false).Text("Please use psm2_mq_iprobe2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_improbe(psm2_mq_t mq, uint64_t rtag, uint64_t rtagsel,
+                psm2_mq_req_t *req, psm2_mq_status_t *status) {
+  JASSERT(false).Text("Please use psm2_mq_improbe2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_ipeek(psm2_mq_t mq, psm2_mq_req_t *req,
+              psm2_mq_status_t *status) {
+  JASSERT(false).Text("Please use psm2_mq_ipeek2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_wait(psm2_mq_req_t *request, psm2_mq_status_t *status) {
+  JASSERT(false).Text("Please use psm2_mq_wait2 instead");
+  return PSM2_OK;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_test(psm2_mq_req_t *request, psm2_mq_status_t *status) {
+  JASSERT(false).Text("Please use psm2_mq_test2 instead");
+  return PSM2_OK;
 }
