@@ -59,7 +59,7 @@ namespace dmtcp
     uint64_t tag_order_mask;
     // Only uint32_t is used in the source code, but we use 64 bits for safety
     map<uint32_t, uint64_t> opts;
-    // Used to trace the recv requests, unmatched requests need to be reposted
+    // Used to trace the recv requests. Unmatched requests need to be reposted
     // on restart
     map<psm2_mq_req_t, RecvReq> recvReqLog;
     // Used to trace improbe requests, so that unreceived requests will not be lost
@@ -76,14 +76,14 @@ namespace dmtcp
     // number of local sends posted == number of local sends completed
     // total number of sends completed == total number of recvs completed
     //
-    // However, for PSM, when a non-blocking request is completed (via test/wait),
+    // However, for PSM2, when a non-blocking request is completed (via test/wait),
     // it is difficult for us to tell whether it is a send request or a recv request.
     // Therefore, we use a different mechanism to eusure that the network is drained:
     //
     // (total number of sends posted) * 2 == total number of all requests completed
     //
     // The above is based on the fact that for a correct program, there is exactly
-    // one recv corresponding to one send. Hence each posted sends corresponds to
+    // one recv corresponding to one send. Hence each posted send corresponds to
     // exactly two completions: one local send completion, and one remote recv
     // completion (support for blocking sends is trivial to add to satisfy the above
     // equation).

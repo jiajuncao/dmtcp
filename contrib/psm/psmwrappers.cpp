@@ -357,3 +357,79 @@ psm2_mq_setopt(psm2_mq_t mq, int option, const void *value) {
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }
+
+static psm2_error_t
+internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
+                 uint32_t flags, psm2_mq_tag_t *stag,
+                 const void *buf, uint32_t len,
+                 void *context, psm2_mq_req_t *req,
+                 bool blocking) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  EpInfo *epInfo;
+  psm2_epaddr_t realDest = dest;
+
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
+  JASSERT(mqInfo->ep != NULL);
+  epInfo = (EpInfo *)(mqInfo->ep);
+
+  if (!blocking) {
+    JASSERT(req != NULL);
+  }
+
+  if (PsmList::instance().isRestart()) {
+    realDest = epInfo->remoteEpsAddr[dest];
+  }
+
+  if (blocking) {
+    ret = _real_psm2_mq_send2(mqInfo->realMq, realDest,
+                              flags, stag, buf, len);
+  }
+  else {
+    ret = _real_psm2_mq_isend2(mqInfo->realMq, realDest,
+                               flags, stag, buf, len,
+                               context, req);
+  }
+
+  mqInfo->sendsPosted++;
+  if (blocking) {
+    mqInfo->ReqCompleted++;
+  }
+
+  return ret;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_send2(psm2_mq_t mq, psm2_epaddr_t dest,
+              uint32_t flags, psm2_mq_tag_t *stag,
+              const void *buf, uint32_t len) {
+
+  psm2_error_t ret;
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  ret = internal_mq_send(mq, dest, flags, stag,
+                         buf, len, NULL, NULL, true);
+  JASSERT(ret == PSM2_OK);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
+  return ret;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_isend2(psm2_mq_t mq, psm2_epaddr_t dest,
+               uint32_t flags, psm2_mq_tag_t *stag,
+               const void *buf, uint32_t len,
+               void *context, psm2_mq_req_t *req) {
+  psm2_error_t ret;
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  ret = internal_mq_send(mq, dest, flags, stag,
+                         buf, len, context, req, false);
+  JASSERT(ret == PSM2_OK);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
+  return ret;
+}
