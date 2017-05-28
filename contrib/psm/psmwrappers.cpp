@@ -235,8 +235,7 @@ psm2_ep_disconnect(psm2_ep_t ep, int num_of_epaddr,
       realArrayEpAddr.push_back(epInfo->remoteEpsAddr[array_of_epaddr[i]]);
       epInfo->remoteEpsAddr.erase(array_of_epaddr[i]);
       num++;
-    }
-    else {
+    } else {
       realArrayEpAddr.push_back(array_of_epaddr[i]);
     }
   }
@@ -392,8 +391,7 @@ internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
   if (blocking) {
     ret = _real_psm2_mq_send2(mqInfo->realMq, realDest,
                               flags, stag, buf, len);
-  }
-  else {
+  } else {
     ret = _real_psm2_mq_isend2(mqInfo->realMq, realDest,
                                flags, stag, buf, len,
                                context, req);
@@ -440,6 +438,26 @@ psm2_mq_isend2(psm2_mq_t mq, psm2_epaddr_t dest,
 
   return ret;
 }
+
+/*
+ * Recv logic is as follows:
+ *
+ * First, check the unexpected queue, if there exists a match,
+ * copy the data to the user buffer, and add the request to both
+ * the recv log and the internal cq.
+ *
+ * If there is not any matching request in the unexpected queue,
+ * do a real recv call, and add the request to the recv log.
+ *
+ * Note in the case of unexpected queue, we actually do a sync
+ * copy, i.e., when it returns, recv is finished already. This
+ * should not hurt the performance too much, because the unexpected
+ * queue is not supposed to be too large. Also, we eliminate the
+ * special case for before checkpoint, where there is no need to
+ * check unexpected queue. Since the cost is constant and negligible,
+ * code is cleaner without the special handling.
+ *
+ * */
 
 /* Unsupported operations
  *

@@ -7,6 +7,9 @@
 #include "jassert.h"
 #include "dmtcpalloc.h"
 
+#define unlikely(x_) __builtin_expect(!!(x_),0)
+#define likely(x_)   __builtin_expect(!!(x_),1)
+
 namespace dmtcp
 {
   typedef struct {
@@ -28,6 +31,7 @@ namespace dmtcp
 
   // Log entry to record a single irecv2 request
   typedef struct {
+    psm2_mq_req_t realReq;
     psm2_epaddr_t src;
     void *buf;
     void *context;
@@ -37,7 +41,13 @@ namespace dmtcp
     uint32_t len;
   } RecvReq;
 
+  // Log entry to record a single isend2 request
   typedef struct {
+    psm2_mq_req_t realReq;
+  } SendReq;
+
+  typedef struct {
+    psm2_mq_req_t realReq;
     psm2_epaddr_t src;
     psm2_mq_tag_t stag;
     void *buf;
@@ -49,9 +59,16 @@ namespace dmtcp
   // data, if the request is not received by imrecv()
   // at checkpoint time.
   typedef struct {
+    psm2_mq_req_t realReq;
     void *buf;
     uint32_t len;
   } ProbeReq;
+
+  // Wrapper for a completion event
+  typedef struct {
+    psm2_mq_req_t userReq;
+    psm2_mq_status_t status;
+  } CompWrapper;
 
   typedef struct {
     psm2_mq_t realMq;
@@ -61,16 +78,18 @@ namespace dmtcp
     map<uint32_t, uint64_t> opts;
     // Used to trace the recv requests. Unmatched requests need to be reposted
     // on restart
-    map<psm2_mq_req_t, RecvReq> recvReqLog;
+    vector<psm2_mq_req_t> recvReqLog;
+    // Used to trace the send request.
+    vector<psm2_mq_req_t> sendReqLog;
     // Used to trace improbe requests, so that unreceived requests will not be lost
     // on restart.
-    map<psm2_mq_req_t, ProbeReq> improbeReqLog;
+    vector<psm2_mq_req_t> improbeReqLog;
     // Internal completion queue, used to drain finished requests at checkpoint
     // time, including both send and recv requests.
-    map<psm2_mq_req_t, psm2_mq_status_t> internalCq;
+    vector<CompWrapper> internalCq;
     // Internal unexpected message queue, used to drain the PSM2 unexpected queue
     // at checkpoint time.
-    map<psm2_mq_req_t, UnexpectedMsg> unexpectedQueue;
+    vector<UnexpectedMsg> unexpectedQueue;
     // Initially, we wanted to make sure that the following is true at checkpoint time:
     //
     // number of local sends posted == number of local sends completed
