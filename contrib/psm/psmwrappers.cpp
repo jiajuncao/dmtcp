@@ -392,9 +392,15 @@ internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
     ret = _real_psm2_mq_send2(mqInfo->realMq, realDest,
                               flags, stag, buf, len);
   } else {
+    SendReq *sendReq =
+      (SendReq *)JALLOC_HELPER_MALLOC(sizeof(SendReq));
+    JASSERT(sendReq != NULL);
+
     ret = _real_psm2_mq_isend2(mqInfo->realMq, realDest,
                                flags, stag, buf, len,
-                               context, req);
+                               context, &sendReq->realReq);
+    JASSERT(ret == PSM2_OK);
+    *req = (psm2_mq_req_t)sendReq;
   }
 
   mqInfo->sendsPosted++;
