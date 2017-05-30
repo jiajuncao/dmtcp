@@ -1,6 +1,7 @@
 #include "psmwrappers.h"
 #include <psm2.h>
 #include <psm2_mq.h>
+#include <string.h>
 #include "dmtcp.h"
 #include "jassert.h"
 #include "psminternal.h"
@@ -401,6 +402,7 @@ internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
                                context, &sendReq->realReq);
     JASSERT(ret == PSM2_OK);
     *req = (psm2_mq_req_t)sendReq;
+    mqInfo->sendReqLog.push_back(sendReq);
   }
 
   mqInfo->sendsPosted++;
@@ -449,8 +451,8 @@ psm2_mq_isend2(psm2_mq_t mq, psm2_epaddr_t dest,
  * Recv logic is as follows:
  *
  * First, check the unexpected queue, if there exists a match,
- * copy the data to the user buffer, and add the request to both
- * the recv log and the internal cq.
+ * copy the data to the user buffer, and add the request to
+ * the internal cq.
  *
  * If there is not any matching request in the unexpected queue,
  * do a real recv call, and add the request to the recv log.
@@ -464,6 +466,88 @@ psm2_mq_isend2(psm2_mq_t mq, psm2_epaddr_t dest,
  * code is cleaner without the special handling.
  *
  * */
+
+EXTERNC psm2_error_t
+psm2_mq_irecv2(psm2_mq_t mq, psm2_epaddr_t src,
+               psm2_mq_tag_t *rtag, psm2_mq_tag_t *rtagsel,
+               uint32_t flags, void *buf, uint32_t len,
+               void *context, psm2_mq_req_t *req) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  EpInfo *epInfo;
+  psm2_epaddr_t realSrc = src;
+  RecvReq *recvReq;
+
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
+  JASSERT(mqInfo->ep != NULL);
+  epInfo = (EpInfo *)(mqInfo->ep);
+
+  recvReq = (RecvReq *)JALLOC_HELPER_MALLOC(sizeof(RecvReq));
+  JASSERT(recvReq != NULL);
+
+  // First check the unexpected queue, try to find a matching message
+  if (mqInfo->unexpectedQueue.size() > 0) {
+    for (size_t i = 0; i < mqInfo->unexpectedQueue.size(); i++) {
+      UnexpectedMsg msg = mqInfo->unexpectedQueue[i];
+
+      if ((src == PSM2_MQ_ANY_ADDR || src == msg.src ) &&
+          !((msg.stag.tag0 ^ rtag->tag0) & rtagsel->tag0) &&
+          !((msg.stag.tag1 ^ rtag->tag1) & rtagsel->tag1) &&
+          !((msg.stag.tag2 ^ rtag->tag2) & rtagsel->tag2)) {
+        CompWrapper completion;
+        uint32_t actualLen = (len <= msg.len ? len : msg.len);
+
+        mqInfo->unexpectedQueue.erase(mqInfo->unexpectedQueue.begin() + i);
+        memcpy(buf, msg.buf, actualLen);
+        // Data has been moved to user buffer, it is safe to free ours
+        JALLOC_HELPER_FREE(msg.buf);
+
+        // Now create the completion, and add it to the internal cq
+        // We only need recvReq as a handle in this case
+        completion.userReq = (psm2_mq_req_t)recvReq;
+        completion.reqType = RECV;
+        completion.status.msg_peer = src;
+        completion.status.msg_tag = msg.stag;
+        completion.status.msg_length = msg.len;
+        completion.status.nbytes = actualLen;
+        completion.status.error_code =
+          (actualLen == msg.len ? PSM2_OK : PSM2_MQ_TRUNCATION);
+        completion.status.context = context;
+
+        mqInfo->internalCq.pushback(completion);
+        *req = (psm2_mq_req_t)recvReq;
+        return PSM2_OK;
+      }
+    }
+  }
+
+  // If we reach here, it means either the unexpected queue is empty,
+  // or there is not any matching message in the unexpected queue.
+  // In both cases, we will do a real recv call
+  if (PsmList::instance().isRestart() &&
+      src != PSM2_MQ_ANY_ADDR) {
+    realSrc = epInfo->remoteEpsAddr[src];
+  }
+
+  ret = _real_psm2_mq_irecv2(mqInfo->realMq, realSrc,
+                             rtag, rtagsel, flags, buf, len,
+                             context, &recvReq->realReq);
+  JASSERT(ret == PSM2_OK);
+  *req = (psm2_mq_req_t)recvReq;
+
+  recvReq->src = src;
+  recvReq->buf = buf;
+  recvReq->context = context;
+  recvReq->rtag = *rtag;
+  recvReq->rtagsel = *rtagsel;
+  recvReq->flags = flags;
+  recvReq->len = len;
+
+  mqInfo->recvReqLog.push_back(recvReq);
+
+  return ret;
+}
 
 /* Unsupported operations
  *

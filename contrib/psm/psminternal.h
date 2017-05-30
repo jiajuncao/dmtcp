@@ -29,6 +29,19 @@ namespace dmtcp
     vector<EpConnLog> connLog;
   } EpInfo;
 
+  typedef enum {
+    SEND,
+    RECV,
+    MRECV
+  } ReqType;
+
+  /*
+   * Logs are destroyed ONLY when the application calls test/wait.
+   * They are NOT freed at checkpoint time when we drain the in-flight
+   * data and the unexpected queue.
+   *
+   * */
+
   // Log entry to record a single irecv2 request
   typedef struct {
     psm2_mq_req_t realReq;
@@ -46,14 +59,6 @@ namespace dmtcp
     psm2_mq_req_t realReq;
   } SendReq;
 
-  typedef struct {
-    psm2_mq_req_t realReq;
-    psm2_epaddr_t src;
-    psm2_mq_tag_t stag;
-    void *buf;
-    uint32_t len;
-  } UnexpectedMsg;
-
   // For an improbe2 request, we only need to record
   // the request, and where we are going to store the
   // data, if the request is not received by imrecv()
@@ -64,10 +69,18 @@ namespace dmtcp
     uint32_t len;
   } ProbeReq;
 
+  typedef struct {
+    psm2_epaddr_t src;
+    void *buf;
+    psm2_mq_tag_t stag;
+    uint32_t len;
+  } UnexpectedMsg;
+
   // Wrapper for a completion event
   typedef struct {
     psm2_mq_req_t userReq;
-    psm2_mq_status_t status;
+    psm2_mq_status2_t status;
+    ReqType reqType;
   } CompWrapper;
 
   typedef struct {
@@ -78,14 +91,15 @@ namespace dmtcp
     map<uint32_t, uint64_t> opts;
     // Used to trace the recv requests. Unmatched requests need to be reposted
     // on restart
-    vector<psm2_mq_req_t> recvReqLog;
+    vector<RecvReq*> recvReqLog;
     // Used to trace the send request.
-    vector<psm2_mq_req_t> sendReqLog;
+    vector<SendReq*> sendReqLog;
     // Used to trace improbe requests, so that unreceived requests will not be lost
     // on restart.
-    vector<psm2_mq_req_t> improbeReqLog;
+    vector<ProbeReq*> improbeReqLog;
     // Internal completion queue, used to drain finished requests at checkpoint
-    // time, including both send and recv requests.
+    // time, including both send and recv requests. It also acts as the completion
+    // queue for unexpected messages on resume/restart.
     vector<CompWrapper> internalCq;
     // Internal unexpected message queue, used to drain the PSM2 unexpected queue
     // at checkpoint time.
