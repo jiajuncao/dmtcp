@@ -448,6 +448,54 @@ psm2_mq_isend2(psm2_mq_t mq, psm2_epaddr_t dest,
 }
 
 /*
+ * Try to find a matching message in the unexpected queue,
+ * return the message, and remove it from the queue if requested.
+ */
+static bool
+internal_mq_recv_match(MqInfo *mqInfo, psm2_epaddr_t src,
+                       psm2_mq_tag_t *tag, psm2_mq_tag_t *tagsel,
+                       UnexpectedMsg *unexpectedMsg, bool remove) {
+  bool found = false;
+
+  JASSERT(mqInfo != NULL);
+  JASSERT(unexpectedMsg != NULL);
+
+  if (mqInfo->unexpectedQueue.size() > 0) {
+    vector<UnexpectedMsg> &uq = mqInfo->unexpectedQueue;
+
+    for (size_t i = 0; i < uq.size(); i++) {
+      UnexpectedMsg msg = uq[i];
+
+      if ((src == PSM2_MQ_ANY_ADDR || src == msg.src ) &&
+          !((msg.stag.tag0 ^ tag->tag0) & tagsel->tag0) &&
+          !((msg.stag.tag1 ^ tag->tag1) & tagsel->tag1) &&
+          !((msg.stag.tag2 ^ tag->tag2) & tagsel->tag2)) {
+        found = true;
+        *unexpectedMsg = msg;
+        if (remove) {
+          uq.erase(uq.begin() + i);
+        }
+        break;
+      }
+    }
+  }
+
+  return found;
+}
+
+static void
+status_copy(const UnexpectedMsg *msg, psm2_mq_status2_t *status) {
+  JASSERT(msg != NULL);
+  JASSERT(status != NULL);
+
+  status->error_code = PSM2_OK;
+  status->msg_peer = msg->src;
+  status->msg_tag = msg->stag;
+  status->msg_length = status->nbytes = msg->len;
+  status->context = NULL;
+}
+
+/*
  * Recv logic is as follows:
  *
  * First, check the unexpected queue, if there exists a match,
@@ -477,6 +525,9 @@ psm2_mq_irecv2(psm2_mq_t mq, psm2_epaddr_t src,
   EpInfo *epInfo;
   psm2_epaddr_t realSrc = src;
   RecvReq *recvReq;
+  UnexpectedMsg msg;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
 
   JASSERT(mq != NULL);
   mqInfo = (MqInfo *)mq;
@@ -487,65 +538,100 @@ psm2_mq_irecv2(psm2_mq_t mq, psm2_epaddr_t src,
   JASSERT(recvReq != NULL);
 
   // First check the unexpected queue, try to find a matching message
-  if (mqInfo->unexpectedQueue.size() > 0) {
-    for (size_t i = 0; i < mqInfo->unexpectedQueue.size(); i++) {
-      UnexpectedMsg msg = mqInfo->unexpectedQueue[i];
+  if (internal_mq_recv_match(mqInfo, src,
+                             rtag, rtagsel,
+                             &msg, true)) {
+    CompWrapper completion;
+    uint32_t actualLen = (len <= msg.len ? len : msg.len);
 
-      if ((src == PSM2_MQ_ANY_ADDR || src == msg.src ) &&
-          !((msg.stag.tag0 ^ rtag->tag0) & rtagsel->tag0) &&
-          !((msg.stag.tag1 ^ rtag->tag1) & rtagsel->tag1) &&
-          !((msg.stag.tag2 ^ rtag->tag2) & rtagsel->tag2)) {
-        CompWrapper completion;
-        uint32_t actualLen = (len <= msg.len ? len : msg.len);
+    ret = PSM2_OK;
+    memcpy(buf, msg.buf, actualLen);
+    // Data has been moved to user buffer, it is safe to free ours
+    JALLOC_HELPER_FREE(msg.buf);
 
-        mqInfo->unexpectedQueue.erase(mqInfo->unexpectedQueue.begin() + i);
-        memcpy(buf, msg.buf, actualLen);
-        // Data has been moved to user buffer, it is safe to free ours
-        JALLOC_HELPER_FREE(msg.buf);
+    // Now create the completion, and add it to the internal cq
+    // We only need recvReq as a handle in this case
+    completion.userReq = (psm2_mq_req_t)recvReq;
+    completion.reqType = RECV;
 
-        // Now create the completion, and add it to the internal cq
-        // We only need recvReq as a handle in this case
-        completion.userReq = (psm2_mq_req_t)recvReq;
-        completion.reqType = RECV;
-        completion.status.msg_peer = src;
-        completion.status.msg_tag = msg.stag;
-        completion.status.msg_length = msg.len;
-        completion.status.nbytes = actualLen;
-        completion.status.error_code =
-          (actualLen == msg.len ? PSM2_OK : PSM2_MQ_TRUNCATION);
-        completion.status.context = context;
-
-        mqInfo->internalCq.pushback(completion);
-        *req = (psm2_mq_req_t)recvReq;
-        return PSM2_OK;
-      }
+    status_copy(&msg, &completion.status);
+    completion.status.nbytes = actualLen;
+    if (actualLen < msg.len) {
+      completion.status.error_code = PSM2_MQ_TRUNCATION;
     }
+    completion.status.context = context;
+
+    mqInfo->internalCq.push_back(completion);
+    *req = (psm2_mq_req_t)recvReq;
+  } else {
+    // If we reach here, it means either the unexpected queue is empty,
+    // or there is not any matching message in the unexpected queue.
+    // In both cases, we will do a real recv call
+    if (PsmList::instance().isRestart() &&
+        src != PSM2_MQ_ANY_ADDR) {
+      realSrc = epInfo->remoteEpsAddr[src];
+    }
+
+    ret = _real_psm2_mq_irecv2(mqInfo->realMq, realSrc,
+                               rtag, rtagsel, flags, buf, len,
+                               context, &recvReq->realReq);
+    JASSERT(ret == PSM2_OK);
+    *req = (psm2_mq_req_t)recvReq;
+
+    recvReq->src = src;
+    recvReq->buf = buf;
+    recvReq->context = context;
+    recvReq->rtag = *rtag;
+    recvReq->rtagsel = *rtagsel;
+    recvReq->flags = flags;
+    recvReq->len = len;
+
+    mqInfo->recvReqLog.push_back(recvReq);
   }
 
-  // If we reach here, it means either the unexpected queue is empty,
-  // or there is not any matching message in the unexpected queue.
-  // In both cases, we will do a real recv call
-  if (PsmList::instance().isRestart() &&
-      src != PSM2_MQ_ANY_ADDR) {
-    realSrc = epInfo->remoteEpsAddr[src];
+  DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
+
+/* iprobe2 is similar to irecv2, except the following:
+ *
+ * 1. We do not remove the matching message from the unexpected
+ *    queue, if it exists.
+ * 2. We do not log any iprobe2 request.
+ */
+EXTERNC psm2_error_t
+psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
+                psm2_mq_tag_t *rtag, psm2_mq_tag_t *rtagsel,
+                psm2_mq_status2_t *status) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  EpInfo *epInfo;
+  psm2_epaddr_t realSrc = src;
+  UnexpectedMsg msg;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
+  JASSERT(mqInfo->ep != NULL);
+  epInfo = (EpInfo *)(mqInfo->ep);
+
+  if (internal_mq_recv_match(mqInfo, src,
+                             rtag, rtagsel,
+                             &msg, false)) {
+    ret = PSM2_OK;
+    status_copy(&msg, status);
+  } else {
+    if (PsmList::instance().isRestart() &&
+        src != PSM2_MQ_ANY_ADDR) {
+      realSrc = epInfo->remoteEpsAddr[src];
+    }
+
+    ret = _real_psm2_mq_iprobe2(mqInfo->realMq, realSrc,
+                                rtag, rtagsel, status);
   }
 
-  ret = _real_psm2_mq_irecv2(mqInfo->realMq, realSrc,
-                             rtag, rtagsel, flags, buf, len,
-                             context, &recvReq->realReq);
-  JASSERT(ret == PSM2_OK);
-  *req = (psm2_mq_req_t)recvReq;
-
-  recvReq->src = src;
-  recvReq->buf = buf;
-  recvReq->context = context;
-  recvReq->rtag = *rtag;
-  recvReq->rtagsel = *rtagsel;
-  recvReq->flags = flags;
-  recvReq->len = len;
-
-  mqInfo->recvReqLog.push_back(recvReq);
-
+  DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }
 
