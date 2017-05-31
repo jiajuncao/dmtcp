@@ -484,7 +484,7 @@ internal_mq_recv_match(MqInfo *mqInfo, psm2_epaddr_t src,
 }
 
 static void
-status_copy(const UnexpectedMsg *msg, psm2_mq_status2_t *status) {
+status_copy_unexpected_msg(const UnexpectedMsg *msg, psm2_mq_status2_t *status) {
   JASSERT(msg != NULL);
   JASSERT(status != NULL);
 
@@ -492,6 +492,18 @@ status_copy(const UnexpectedMsg *msg, psm2_mq_status2_t *status) {
   status->msg_peer = msg->src;
   status->msg_tag = msg->stag;
   status->msg_length = status->nbytes = msg->len;
+  status->context = NULL;
+}
+
+static void
+status_copy_mprobe_req(const MProbeReq *req, psm2_mq_status2_t *status) {
+  JASSERT(req != NULL);
+  JASSERT(status != NULL);
+
+  status->error_code = PSM2_OK;
+  status->msg_peer = req->src;
+  status->msg_tag = req->stag;
+  status->msg_length = status->nbytes = req->len;
   status->context = NULL;
 }
 
@@ -554,7 +566,7 @@ psm2_mq_irecv2(psm2_mq_t mq, psm2_epaddr_t src,
     completion.userReq = (psm2_mq_req_t)recvReq;
     completion.reqType = RECV;
 
-    status_copy(&msg, &completion.status);
+    status_copy_unexpected_msg(&msg, &completion.status);
     completion.status.nbytes = actualLen;
     if (actualLen < msg.len) {
       completion.status.error_code = PSM2_MQ_TRUNCATION;
@@ -620,7 +632,7 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
                              rtag, rtagsel,
                              &msg, false)) {
     ret = PSM2_OK;
-    status_copy(&msg, status);
+    status_copy_unexpected_msg(&msg, status);
   } else {
     if (PsmList::instance().isRestart() &&
         src != PSM2_MQ_ANY_ADDR) {
@@ -630,6 +642,133 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
     ret = _real_psm2_mq_iprobe2(mqInfo->realMq, realSrc,
                                 rtag, rtagsel, status);
   }
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
+
+/*
+ * For each improbe2 request, we also have a log entry associated.
+ * If a checkpoint happens between an improbe2 and an imrecv, at
+ * checkpoint time, we will call imrecv, and the log also holds
+ * information about the data. Each imrecv call will first check
+ * the improbe2 log queue. If the request exists, it means the
+ * message has already been received (at checkpoint time). Otherwise,
+ * we call the real imrecv.
+ * */
+
+EXTERNC psm2_error_t
+psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
+                 psm2_mq_tag_t *rtag, psm2_mq_tag_t *rtagsel,
+                 psm2_mq_req_t *req, psm2_mq_status2_t *status) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  EpInfo *epInfo;
+  MProbeReq *mprobeReq;
+  psm2_epaddr_t realSrc = src;
+  UnexpectedMsg msg;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  mprobeReq = (MProbeReq *)JALLOC_HELPER_MALLOC(sizeof(MProbeReq));
+  JASSERT(mprobeReq != NULL);
+
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
+  JASSERT(mqInfo->ep != NULL);
+  epInfo = (EpInfo *)(mqInfo->ep);
+
+  mprobeReq->src = src;
+  mprobeReq->rtag = *rtag;
+  mprobeReq->rtagsel = *rtagsel;
+  mprobeReq->flags = 0;
+  mprobeReq->context = NULL;
+
+  *req = (psm2_mq_req_t)mprobeReq; // Do not care if returns PSM2_MQ_INCOMPLETE
+  if (internal_mq_recv_match(mqInfo, src,
+                             rtag, rtagsel,
+                             &msg, true)) {
+    ret = PSM2_OK;
+    status_copy_unexpected_msg(&msg, status);
+    mprobeReq->realReq = NULL; // meaning it's an unexpected msg
+    mprobeReq->buf = msg.buf; // buf here already holding the data
+    mprobeReq->len = msg.len;
+    mprobeReq->stag = msg.stag;
+    mqInfo->improbeReqLog.push_back(mprobeReq);
+  } else {
+    if (PsmList::instance().isRestart() &&
+        src != PSM2_MQ_ANY_ADDR) {
+      realSrc = epInfo->remoteEpsAddr[src];
+    }
+
+    ret = _real_psm2_mq_improbe2(mqInfo->realMq, realSrc,
+                                 rtag, rtagsel,
+                                 &mprobeReq->realReq, status);
+    if (ret == PSM2_OK) {
+      mprobeReq->buf = NULL;
+      mprobeReq->len = status->msg_length;
+      mqInfo->improbeReqLog.push_back(mprobeReq);
+    } else {
+      JALLOC_HELPER_FREE(mprobeReq);
+    }
+  }
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
+               void *buf, uint32_t len, void *context,
+               psm2_mq_req_t *req) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  MProbeReq *mprobeReq = (MProbeReq *)(*req);
+  size_t i;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  JASSERT(mprobeReq != NULL);
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
+
+  for (i = 0; i < mqInfo->improbeReqLog.size(); i++) {
+    if (mqInfo->improbeReqLog[i] == mprobeReq) {
+      if (mprobeReq->realReq == NULL) { // Unexpected message
+        CompWrapper completion;
+        uint32_t actualLen = (len <= mprobeReq->len ? len :
+                                                      mprobeReq->len);
+
+        ret = PSM2_OK;
+        JASSERT(mprobeReq->buf != NULL);
+        memcpy(buf, mprobeReq->buf, actualLen);
+        // Data has been moved to user buffer, it is safe to free ours
+        JALLOC_HELPER_FREE(mprobeReq->buf);
+
+        // Now create the completion, and add it to the internal cq
+        // We only need recvReq as a handle in this case
+        completion.userReq = *req;
+        completion.reqType = MRECV;
+
+        status_copy_mprobe_req(mprobeReq, &completion.status);
+        completion.status.nbytes = actualLen;
+        if (actualLen < mprobeReq->len) {
+          completion.status.error_code = PSM2_MQ_TRUNCATION;
+        }
+        completion.status.context = context;
+
+        mqInfo->internalCq.push_back(completion);
+      } else {
+        JASSERT(mprobeReq->buf == NULL);
+        ret = _real_psm2_mq_imrecv(mqInfo->realMq, flags,
+                                   buf, len, context,
+                                   &mprobeReq->realReq);
+      }
+      break;
+    }
+  }
+
+  JASSERT(i != mqInfo->improbeReqLog.size());
 
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;

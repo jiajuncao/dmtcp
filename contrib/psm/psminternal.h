@@ -54,20 +54,22 @@ namespace dmtcp
     uint32_t len;
   } RecvReq;
 
+  typedef struct {
+    psm2_mq_req_t realReq;
+    psm2_epaddr_t src;
+    void *buf;
+    void *context;
+    psm2_mq_tag_t rtag;
+    psm2_mq_tag_t rtagsel;
+    uint32_t flags;
+    uint32_t len;
+    psm2_mq_tag_t stag;
+  } MProbeReq;
+
   // Log entry to record a single isend2 request
   typedef struct {
     psm2_mq_req_t realReq;
   } SendReq;
-
-  // For an improbe2 request, we only need to record
-  // the request, and where we are going to store the
-  // data, if the request is not received by imrecv()
-  // at checkpoint time.
-  typedef struct {
-    psm2_mq_req_t realReq;
-    void *buf;
-    uint32_t len;
-  } ProbeReq;
 
   typedef struct {
     psm2_epaddr_t src;
@@ -96,7 +98,7 @@ namespace dmtcp
     vector<SendReq*> sendReqLog;
     // Used to trace improbe requests, so that unreceived requests will not be lost
     // on restart.
-    vector<ProbeReq*> improbeReqLog;
+    vector<MProbeReq*> improbeReqLog;
     // Internal completion queue, used to drain finished requests at checkpoint
     // time, including both send and recv requests. It also acts as the completion
     // queue for unexpected messages on resume/restart.
