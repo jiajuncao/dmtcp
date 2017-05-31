@@ -38,7 +38,8 @@ namespace dmtcp
   /*
    * Logs are destroyed ONLY when the application calls test/wait.
    * They are NOT freed at checkpoint time when we drain the in-flight
-   * data and the unexpected queue.
+   * data and the unexpected queue, since the application is holding
+   * the request handle.
    *
    * */
 
@@ -54,16 +55,10 @@ namespace dmtcp
     uint32_t len;
   } RecvReq;
 
+  // Log entry to record a single improbe2 request
   typedef struct {
     psm2_mq_req_t realReq;
-    psm2_epaddr_t src;
-    void *buf;
-    void *context;
-    psm2_mq_tag_t rtag;
-    psm2_mq_tag_t rtagsel;
-    uint32_t flags;
     uint32_t len;
-    psm2_mq_tag_t stag;
   } MProbeReq;
 
   // Log entry to record a single isend2 request
@@ -72,10 +67,14 @@ namespace dmtcp
   } SendReq;
 
   typedef struct {
+    // Only valid for mprobe request, NULL means
+    // a previous unexpected recv request
+    psm2_mq_req_t userReq;
     psm2_epaddr_t src;
     void *buf;
     psm2_mq_tag_t stag;
     uint32_t len;
+    ReqType reqType; // should be either RECV or MRECV
   } UnexpectedMsg;
 
   // Wrapper for a completion event
@@ -105,7 +104,7 @@ namespace dmtcp
     vector<CompWrapper> internalCq;
     // Internal unexpected message queue, used to drain the PSM2 unexpected queue
     // at checkpoint time.
-    vector<UnexpectedMsg> unexpectedQueue;
+    vector<UnexpectedMsg*> unexpectedQueue;
     // Initially, we wanted to make sure that the following is true at checkpoint time:
     //
     // number of local sends posted == number of local sends completed
