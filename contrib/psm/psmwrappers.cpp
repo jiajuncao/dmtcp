@@ -5,6 +5,7 @@
 #include "dmtcp.h"
 #include "jassert.h"
 #include "psminternal.h"
+#include "psmutil.h"
 
 using namespace dmtcp;
 
@@ -480,46 +481,6 @@ internal_mq_recv_match(MqInfo *mqInfo, psm2_epaddr_t src,
   return NULL;
 }
 
-static void
-status_copy(const UnexpectedMsg *msg, psm2_mq_status2_t *status) {
-  JASSERT(msg != NULL);
-  JASSERT(status != NULL);
-
-  status->error_code = PSM2_OK;
-  status->msg_peer = msg->src;
-  status->msg_tag = msg->stag;
-  status->msg_length = status->nbytes = msg->len;
-  status->context = NULL;
-}
-
-static psm2_epaddr_t
-realToVirtualPeer(MqInfo *mqInfo, psm2_epaddr_t peer) {
-  psm2_epaddr_t virtualPeer = peer;
-  EpInfo *epInfo;
-
-  JASSERT(mqInfo != NULL);
-  JASSERT(mqInfo->ep != NULL);
-  epInfo = (EpInfo *)(mqInfo->ep);
-
-  if (PsmList::instance().isRestart()) {
-    bool found = false;
-    map<psm2_epaddr_t, psm2_epaddr_t> &epsAddr =
-      epInfo->remoteEpsAddr;
-    map<psm2_epaddr_t, psm2_epaddr_t>::iterator it;
-
-    for (it = epsAddr.begin(); it != epsAddr.end(); it++) {
-      if (it->second == peer) {
-        found = true;
-        virtualPeer = it->first;
-        break;
-      }
-    }
-    JASSERT(found);
-  }
-
-  return virtualPeer;
-}
-
 /*
  * Recv logic is as follows:
  *
@@ -579,7 +540,7 @@ psm2_mq_irecv2(psm2_mq_t mq, psm2_epaddr_t src,
     completion.userReq = *req;
     completion.reqType = RECV;
 
-    status_copy(msg, &completion.status);
+    Util::status_copy(msg, &completion.status);
     completion.status.nbytes = actualLen;
     if (actualLen < msg->len) {
       completion.status.error_code = PSM2_MQ_TRUNCATION;
@@ -653,7 +614,7 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
   if (msg != NULL) {
     ret = PSM2_OK;
     if (status != NULL) {
-      status_copy(msg, status);
+      Util::status_copy(msg, status);
     }
   } else {
     if (PsmList::instance().isRestart() &&
@@ -712,7 +673,7 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
     *req = (psm2_mq_req_t)msg;
     msg->reqType = MRECV;
     if (status != NULL) {
-      status_copy(msg, status);
+      Util::status_copy(msg, status);
     }
   } else {
     MProbeReq *mprobeReq;
@@ -793,7 +754,7 @@ psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
         completion.userReq = *req;
         completion.reqType = MRECV;
 
-        status_copy(msg, &completion.status);
+        Util::status_copy(msg, &completion.status);
         completion.status.nbytes = actualLen;
         if (actualLen < msg->len) {
           completion.status.error_code = PSM2_MQ_TRUNCATION;
@@ -848,6 +809,7 @@ psm2_mq_ipeek2(psm2_mq_t mq, psm2_mq_req_t *req,
   mqInfo = (MqInfo *)mq;
 
   if (mqInfo->internalCq.size() > 0) {
+    // Return the first element
     CompWrapper completion = mqInfo->internalCq[0];
 
     ret = PSM2_OK;
@@ -899,13 +861,26 @@ psm2_mq_ipeek2(psm2_mq_t mq, psm2_mq_req_t *req,
 
       JASSERT(found);
       if (status && status->msg_peer != PSM2_MQ_ANY_ADDR) {
-        status->msg_peer = realToVirtualPeer(mqInfo,
-                                             status->msg_peer);
+        status->msg_peer = Util::realToVirtualPeer(mqInfo,
+                                                   status->msg_peer);
       }
     }
   }
 
   DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
+
+EXTERNC psm2_error_t
+psm2_mq_wait2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
+  psm2_error_t ret;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  ret = PsmList::mqWait(request, status);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
   return ret;
 }
 

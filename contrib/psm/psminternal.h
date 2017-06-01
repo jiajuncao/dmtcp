@@ -162,6 +162,12 @@ namespace dmtcp
                          const struct psm2_optkey *opts,
                          int numopts, psm2_mq_t mq);
       void onMqFinalize(psm2_mq_t mq);
+      // Since mq in not passed in for wait and test, we need
+      // to do the work in PsmList, not the wrappers.
+      psm2_error_t mqWait(psm2_mq_req_t *request,
+                          psm2_mq_status2_t *status);
+      psm2_error_t mqTest(psm2_mq_req_t *request,
+                          psm2_mq_status2_t *status);
 
     private:
       vector<EpInfo*> _epList;

@@ -1,6 +1,7 @@
 #include <string.h>
 #include "psminternal.h"
 #include "psmwrappers.h"
+#include "psmutil.h"
 
 using namespace dmtcp;
 
@@ -124,4 +125,51 @@ void PsmList::onMqFinalize(psm2_mq_t mq) {
   }
 
   JASSERT(found);
+}
+
+psm2_error_t PsmList::mqWait(psm2_mq_req_t *request,
+                             psm2_mq_status2_t *status) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  psm2_mq_req_t realReq;
+
+  if (*request == PSM2_MQ_REQINVALID) {
+    return PSM2_OK;
+  }
+
+  JASSERT(_mqList.size() == 1);
+  mqInfo = _mqList[0];
+
+  for (size_t i = 0; i < mqInfo->internalCq.size(); i++) {
+    const CompWrapper &completion = mqInfo->internalCq[i];
+
+    if (*request == completion.userReq) {
+      if (status != NULL) {
+        *status = completion.status;
+      }
+      mqInfo->internalCq.erase(i);
+      // *request here can hold any of the following:
+      // RecvReq, MProbeReq, SendReq, UnexpectedMsg
+      JALLOC_HELPER_FREE(*request);
+      *request = PSM2_MQ_REQINVALID;
+      return PSM2_OK;
+    }
+  }
+
+  // We can cast to any type of the three (send, recv, mprobe),
+  // since realReq is the first element of all three structs.
+  realReq = ((SendReq *)(*request))->realReq;
+  ret = _real_psm2_mq_wait2(&realReq, status);
+
+  if (ret == PSM2_OK) {
+    mqInfo->ReqCompleted++;
+    JALLOC_HELPER_FREE(*request);
+    *request = PSM2_MQ_REQINVALID;
+    if (status != NULL) {
+      status->msg_peer =
+        Util::realToVirtualPeer(mqInfo, status->msg_peer);
+    }
+  }
+
+  return ret;
 }
