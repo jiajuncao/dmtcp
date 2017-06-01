@@ -624,7 +624,9 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
                                RECV, false);
   if (msg != NULL) {
     ret = PSM2_OK;
-    status_copy(msg, status);
+    if (status != NULL) {
+      status_copy(msg, status);
+    }
   } else {
     if (PsmList::instance().isRestart() &&
         src != PSM2_MQ_ANY_ADDR) {
@@ -678,9 +680,12 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
     ret = PSM2_OK;
     *req = (psm2_mq_req_t)msg;
     msg->reqType = MRECV;
-    status_copy(msg, status);
+    if (status != NULL) {
+      status_copy(msg, status);
+    }
   } else {
     MProbeReq *mprobeReq;
+    psm2_mq_status2_t realStatus;
     psm2_mq_req_t realReq;
 
     if (PsmList::instance().isRestart() &&
@@ -690,12 +695,15 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
 
     ret = _real_psm2_mq_improbe2(mqInfo->realMq, realSrc,
                                  rtag, rtagsel,
-                                 &realReq, status);
+                                 &realReq, &realStatus);
+    if (status != NULL) {
+      *status = realStatus;
+    }
     if (ret == PSM2_OK) {
       mprobeReq = (MProbeReq *)
         JALLOC_HELPER_MALLOC(sizeof(MProbeReq));
       JASSERT(mprobeReq != NULL);
-      mprobeReq->len = status->msg_length;
+      mprobeReq->len = realStatus.msg_length;
       mprobeReq->realReq = realReq;
       mqInfo->improbeReqLog.push_back(mprobeReq);
       *req = (psm2_mq_req_t)mprobeReq;
