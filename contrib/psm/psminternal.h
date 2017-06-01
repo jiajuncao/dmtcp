@@ -70,7 +70,7 @@ namespace dmtcp
     // Only valid for mprobe request, NULL means
     // a previous unexpected recv request
     psm2_mq_req_t userReq;
-    psm2_epaddr_t src;
+    psm2_epaddr_t src; // Virtual source
     void *buf;
     psm2_mq_tag_t stag;
     uint32_t len;
@@ -97,7 +97,7 @@ namespace dmtcp
     vector<SendReq*> sendReqLog;
     // Used to trace improbe requests, so that unreceived requests will not be lost
     // on restart.
-    vector<MProbeReq*> improbeReqLog;
+    vector<MProbeReq*> mprobeReqLog;
     // Internal completion queue, used to drain finished requests at checkpoint
     // time, including both send and recv requests. It also acts as the completion
     // queue for unexpected messages on resume/restart.

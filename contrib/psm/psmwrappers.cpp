@@ -492,6 +492,34 @@ status_copy(const UnexpectedMsg *msg, psm2_mq_status2_t *status) {
   status->context = NULL;
 }
 
+static psm2_epaddr_t
+realToVirtualPeer(MqInfo *mqInfo, psm2_epaddr_t peer) {
+  psm2_epaddr_t virtualPeer = peer;
+  EpInfo *epInfo;
+
+  JASSERT(mqInfo != NULL);
+  JASSERT(mqInfo->ep != NULL);
+  epInfo = (EpInfo *)(mqInfo->ep);
+
+  if (PsmList::instance().isRestart()) {
+    bool found = false;
+    map<psm2_epaddr_t, psm2_epaddr_t> &epsAddr =
+      epInfo->remoteEpsAddr;
+    map<psm2_epaddr_t, psm2_epaddr_t>::iterator it;
+
+    for (it = epsAddr.begin(); it != epsAddr.end(); it++) {
+      if (it->second == peer) {
+        found = true;
+        virtualPeer = it->first;
+        break;
+      }
+    }
+    JASSERT(found);
+  }
+
+  return virtualPeer;
+}
+
 /*
  * Recv logic is as follows:
  *
@@ -635,6 +663,9 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
 
     ret = _real_psm2_mq_iprobe2(mqInfo->realMq, realSrc,
                                 rtag, rtagsel, status);
+    if (status != NULL) {
+      status->msg_peer = src;
+    }
   }
 
   DMTCP_PLUGIN_ENABLE_CKPT();
@@ -698,6 +729,7 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
                                  &realReq, &realStatus);
     if (status != NULL) {
       *status = realStatus;
+      status->msg_peer = src;
     }
     if (ret == PSM2_OK) {
       mprobeReq = (MProbeReq *)
@@ -705,7 +737,7 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
       JASSERT(mprobeReq != NULL);
       mprobeReq->len = realStatus.msg_length;
       mprobeReq->realReq = realReq;
-      mqInfo->improbeReqLog.push_back(mprobeReq);
+      mqInfo->mprobeReqLog.push_back(mprobeReq);
       *req = (psm2_mq_req_t)mprobeReq;
     }
   }
@@ -788,6 +820,89 @@ psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
     ret = _real_psm2_mq_imrecv(mqInfo->realMq, flags,
                                buf, len, context,
                                &mprobeReq->realReq);
+  }
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+  return ret;
+}
+
+/*
+ * For peek operations, if there is any internal completion,
+ * return it. Otherwise, call the real peek function. If
+ * it returns PSM2_MQ_INCOMPLETE, return directly. Otherwise,
+ * we need to update the request to the virtualized one.
+ * Note we need to traverse three lists:
+ *
+ * recvReqLog, sendReqLog and improbReqLog
+ */
+
+EXTERNC psm2_error_t
+psm2_mq_ipeek2(psm2_mq_t mq, psm2_mq_req_t *req,
+               psm2_mq_status2_t *status) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  JASSERT(mq != NULL);
+  mqInfo = (MqInfo *)mq;
+
+  if (mqInfo->internalCq.size() > 0) {
+    CompWrapper completion = mqInfo->internalCq[0];
+
+    ret = PSM2_OK;
+    *req = completion.userReq;
+    if (status != NULL) {
+      *status = completion.status;
+    }
+  } else {
+    psm2_mq_req_t realReq;
+
+    ret = _real_psm2_mq_ipeek2(mqInfo->realMq, &realReq, status);
+    if (ret == PSM2_OK) {
+      bool found = false;
+      size_t i;
+
+      for (i = 0; i < mqInfo->sendReqLog.size(); i++) {
+        SendReq *sendReq = mqInfo->sendReqLog[i];
+
+        if (sendReq->realReq == realReq) {
+          *req = sendReq;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        for (i = 0; i < mqInfo->recvReqLog.size(); i++) {
+          RecvReq *recvReq = mqInfo->recvReqLog[i];
+
+          if (recvReq->realReq == realReq) {
+            *req = recvReq;
+            found = true;
+            break;
+          }
+        }
+      }
+
+      if (!found) {
+        for (i = 0; i < mqInfo->mprobeReqLog.size(); i++) {
+          MProbeReq *mprobeReq = mqInfo->mprobeReqLog[i];
+
+          if (mprobeReq->realReq == realReq) {
+            *req = mprobeReq;
+            found = true;
+            break;
+          }
+        }
+      }
+
+      JASSERT(found);
+      if (status && status->msg_peer != PSM2_MQ_ANY_ADDR) {
+        status->msg_peer = realToVirtualPeer(mqInfo,
+                                             status->msg_peer);
+      }
+    }
   }
 
   DMTCP_PLUGIN_ENABLE_CKPT();
