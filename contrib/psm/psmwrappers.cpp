@@ -884,6 +884,19 @@ psm2_mq_wait2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
   return ret;
 }
 
+EXTERNC psm2_error_t
+psm2_mq_test2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
+  psm2_error_t ret;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  ret = PsmList::mqTest(request, status);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
+  return ret;
+}
+
 /* Unsupported operations
  *
  * We currently do not support the functionalities

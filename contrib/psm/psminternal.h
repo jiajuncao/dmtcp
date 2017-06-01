@@ -165,9 +165,13 @@ namespace dmtcp
       // Since mq in not passed in for wait and test, we need
       // to do the work in PsmList, not the wrappers.
       psm2_error_t mqWait(psm2_mq_req_t *request,
-                          psm2_mq_status2_t *status);
+                          psm2_mq_status2_t *status) {
+        return mqCompletion(request, status, WAIT);
+      }
       psm2_error_t mqTest(psm2_mq_req_t *request,
-                          psm2_mq_status2_t *status);
+                          psm2_mq_status2_t *status){
+        return mqCompletion(request, status, TEST);
+      }
 
     private:
       vector<EpInfo*> _epList;
@@ -177,6 +181,16 @@ namespace dmtcp
       bool _initialized;
       bool _isRestart;
       int _numUnits;
+
+      typedef enum {
+        WAIT,
+        TEST
+      } CompletionOp;
+
+      // Common operation for wait and test
+      psm2_error_t mqCompletion(psm2_mq_req_t *request,
+                                psm2_mq_status2_t *status,
+                                CompletionOp op);
   }
 }
 

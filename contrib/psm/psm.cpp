@@ -127,8 +127,9 @@ void PsmList::onMqFinalize(psm2_mq_t mq) {
   JASSERT(found);
 }
 
-psm2_error_t PsmList::mqWait(psm2_mq_req_t *request,
-                             psm2_mq_status2_t *status) {
+psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
+                                   psm2_mq_status2_t *status,
+                                   CompletionOp op) {
   psm2_error_t ret;
   MqInfo *mqInfo;
   psm2_mq_req_t realReq;
@@ -159,7 +160,11 @@ psm2_error_t PsmList::mqWait(psm2_mq_req_t *request,
   // We can cast to any type of the three (send, recv, mprobe),
   // since realReq is the first element of all three structs.
   realReq = ((SendReq *)(*request))->realReq;
-  ret = _real_psm2_mq_wait2(&realReq, status);
+  if (op == WAIT) {
+    ret = _real_psm2_mq_wait2(&realReq, status);
+  } else {
+    ret = _real_psm2_mq_test2(&realReq, status);
+  }
 
   if (ret == PSM2_OK) {
     mqInfo->ReqCompleted++;
