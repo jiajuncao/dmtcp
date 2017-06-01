@@ -178,3 +178,53 @@ psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
 
   return ret;
 }
+
+psm2_error_t PsmList::mqCancel(psm2_mq_req_t *request) {
+  psm2_error_t ret;
+  MqInfo *mqInfo;
+  psm2_mq_req_t realReq;
+
+  if (*request == NULL) {
+    return PSM2_MQ_INCOMPLETE;
+  }
+
+  JASSERT(_mqList.size() == 1);
+  mqInfo = _mqList[0];
+
+  for (size_t i = 0; i < mqInfo->internalCq.size(); i++) {
+    const CompWrapper &completion = mqInfo->internalCq[i];
+
+    if (*request == completion.userReq) {
+      JASSERT(completion.reqType == RECV);
+      return PSM2_MQ_INCOMPLETE;
+    }
+  }
+
+  realReq = ((RecvReq *)(*request))->realReq;
+  ret = _real_psm2_mq_cancel(&realReq);
+
+  if (ret == PSM2_OK) {
+    bool found = false;
+    vector<RecvReq*> &recvReqLog = mqInfo->recvReqLog;
+
+    // Must return the real request to the mq library
+    JASSERT(_real_psm2_mq_test2(&realReq) == PSM2_OK);
+
+    for (size_t i = 0; i < recvReqLog.size(); i++) {
+      if (recvReqLog[i] == *request) {
+        CompWrapper completion;
+
+        found = true;
+        recvReqLog.erase(i);
+        // Do not care about status
+        completion.reqType = RECV;
+        completion.userReq = *request;
+        mqInfo->internalCq.push_back(completion);
+        break;
+      }
+    }
+    JASSERT(found);
+  }
+
+  return ret;
+}

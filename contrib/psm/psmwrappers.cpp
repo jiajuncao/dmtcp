@@ -897,6 +897,19 @@ psm2_mq_test2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
   return ret;
 }
 
+EXTERNC psm2_error_t
+psm2_mq_cancel(psm2_mq_req_t *request) {
+  psm2_error_t ret;
+
+  DMTCP_PLUGIN_DISABLE_CKPT();
+
+  ret = PsmList::instance().mqCancel(request);
+
+  DMTCP_PLUGIN_ENABLE_CKPT();
+
+  return ret;
+}
+
 /* Unsupported operations
  *
  * We currently do not support the functionalities
