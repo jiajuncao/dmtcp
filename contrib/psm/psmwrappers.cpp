@@ -612,6 +612,7 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
                                rtag, rtagsel,
                                RECV, false);
   if (msg != NULL) {
+    JASSERT(msg->userReq == NULL);
     ret = PSM2_OK;
     if (status != NULL) {
       Util::status_copy(msg, status);
@@ -698,6 +699,7 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
       JASSERT(mprobeReq != NULL);
       mprobeReq->len = realStatus.msg_length;
       mprobeReq->realReq = realReq;
+      mprobeReq->received = false;
       mqInfo->mprobeReqLog.push_back(mprobeReq);
       *req = (psm2_mq_req_t)mprobeReq;
     }
@@ -763,6 +765,9 @@ psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
         mqInfo->internalCq.push_back(completion);
 
         if (msg->userReq != NULL) { // Case 2
+          MProbeReq *mprobeReq = (MProbeReq *)(msg->userReq);
+          JASSERT(!mprobeReq->received);
+          mprobeReq->received = true;
           JASSERT(*req == msg->userReq);
           JALLOC_HELPER_FREE(msg); // *req will be freed on completion
         } else { // Case 3
@@ -781,6 +786,9 @@ psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
     ret = _real_psm2_mq_imrecv(mqInfo->realMq, flags,
                                buf, len, context,
                                &mprobeReq->realReq);
+    if (ret == PSM2_OK) {
+      mprobeReq->received = true;
+    }
   }
 
   DMTCP_PLUGIN_ENABLE_CKPT();
@@ -822,45 +830,14 @@ psm2_mq_ipeek2(psm2_mq_t mq, psm2_mq_req_t *req,
 
     ret = _real_psm2_mq_ipeek2(mqInfo->realMq, &realReq, status);
     if (ret == PSM2_OK) {
-      bool found = false;
-      size_t i;
+      psm2_mq_req_t virtualReq;
+      ReqType reqType;
 
-      for (i = 0; i < mqInfo->sendReqLog.size(); i++) {
-        SendReq *sendReq = mqInfo->sendReqLog[i];
-
-        if (sendReq->realReq == realReq) {
-          *req = sendReq;
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        for (i = 0; i < mqInfo->recvReqLog.size(); i++) {
-          RecvReq *recvReq = mqInfo->recvReqLog[i];
-
-          if (recvReq->realReq == realReq) {
-            *req = recvReq;
-            found = true;
-            break;
-          }
-        }
-      }
-
-      if (!found) {
-        for (i = 0; i < mqInfo->mprobeReqLog.size(); i++) {
-          MProbeReq *mprobeReq = mqInfo->mprobeReqLog[i];
-
-          if (mprobeReq->realReq == realReq) {
-            *req = mprobeReq;
-            found = true;
-            break;
-          }
-        }
-      }
-
-      JASSERT(found);
-      if (status && status->msg_peer != PSM2_MQ_ANY_ADDR) {
+      virtualReq = Util::realToVirtualReq(mqInfo, realReq,
+                                          &reqType, false);
+      JASSERT(virtualReq != NULL);
+      *req = virtualReq;
+      if (status != NULL) {
         status->msg_peer = Util::realToVirtualPeer(mqInfo,
                                                    status->msg_peer);
       }

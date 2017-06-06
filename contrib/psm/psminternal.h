@@ -59,6 +59,7 @@ namespace dmtcp
   typedef struct {
     psm2_mq_req_t realReq;
     uint32_t len;
+    bool received; // indicate whether imrecv has been called.
   } MProbeReq;
 
   // Log entry to record a single isend2 request
@@ -173,6 +174,9 @@ namespace dmtcp
         return mqCompletion(request, status, TEST);
       }
       psm2_error_t mqCancel(psm2_mq_req_t *request);
+
+      void preCheckpoint();
+      void postRestart();
 
     private:
       vector<EpInfo*> _epList;

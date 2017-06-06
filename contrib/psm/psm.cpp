@@ -228,3 +228,194 @@ psm2_error_t PsmList::mqCancel(psm2_mq_req_t *request) {
 
   return ret;
 }
+
+// Step 1 for pre-checkpoint, see comment for preCheckpoint()
+static void drainMprobeRequest(MqInfo *mqInfo) {
+  vector<MProbeReq*> &mprobeReqLog = mqInfo->mprobeReqLog;
+  vector<MProbeReq*>::iterator i = mprobeReqLog.begin();
+
+  while (i != mprobeReqLog.end()) {
+    MProbeReq *req = *i;
+    vector<MProbeReq*>::iterator j = i++;
+
+    if (!req->received) {
+      UnexpectedMsg *msg;
+      char *buf = (char *)JALLOC_HELPER_MALLOC(req->len);
+      psm2_error_t ret;
+      psm2_mq_status2_t status;
+
+      JASSERT(buf != NULL);
+
+      ret = _real_psm2_mq_imrecv(mqInfo->realMq, 0,
+                                 buf, req->len,
+                                 NULL, &req->realReq);
+      JASSERT(ret == PSM2_OK);
+
+      ret = _real_psm2_mq_wait2(&req->realReq, &status);
+      JASSERT(ret == PSM2_OK);
+      JASSERT(status.error_code == PSM2_OK);
+
+      msg =
+        (UnexpectedMsg *)JALLOC_HELPER_MALLOC(sizeof UnexpectedMsg);
+      JASSERT(msg != NULL);
+      msg->userReq = (psm2_mq_req_t)req; // Case 2 for imrecv
+      msg->src = Util::realToVirtualPeer(mqInfo, status.msg_peer);
+      msg->buf = buf;
+      msg->stag = status.msg_tag;
+      msg->len = req->len;
+      msg->reqType = MRECV;
+
+      mqInfo->ReqCompleted++;
+      mprobeReqLog.erase(j);
+      mqInfo->unexpectedQueue.push_back(msg);
+    }
+  }
+}
+
+// Step 2 for pre-checkpoint
+static void drainCompletionQueue(MqInfo *mqInfo) {
+  psm2_error_t ret;
+
+  do {
+    psm2_mq_req_t realReq;
+
+    ret = _real_psm2_mq_ipeek2(mqInfo->realMq, &realReq, NULL);
+    JASSERT(ret == PSM2_OK || ret == PSM2_MQ_INCOMPLETE);
+
+    if (ret == PSM2_OK) {
+      psm2_mq_req_t virtualReq;
+      ReqType reqType;
+      psm2_mq_status2_t status;
+      psm2_error_t err;
+      CompWrapper completion;
+
+      err = _real_psm2_mq_test2(&realReq, &status);
+      JASSERT(err == PSM2_OK);
+
+      status.msg_peer = Util::realToVirtualPeer(mqInfo,
+                                                status.msg_peer);
+      virtualReq = Util::realToVirtualReq(mqInfo, realReq,
+                                          &reqType, true);
+      JASSERT(virtualReq != NULL);
+      if (reqType == MRECV) {
+        JASSERT(((MProbeReq *)virtualReq)->received);
+      }
+      mqInfo->ReqCompleted++;
+      completion.userReq = virtualReq;
+      completion.status = status;
+      completion.reqType = reqType;
+      mqInfo->internalCq.push_back(completion);
+    }
+  } while (mqInfo->sendReqLog.size() > 0 ||
+           mqInfo->mprobeReqLog.size() > 0 ||
+           ret == PSM2_OK); // There are irecv requests finished
+}
+
+// Step 3 for pre-checkpoint
+static void drainUnexpectedQueue(MqInfo *mqInfo) {
+  psm2_error_t ret;
+
+  do {
+    psm2_mq_tag_t rtagsel = {
+      .tag0 = 0,
+      .tag1 = 0,
+      .tag2 = 0
+    }; // ANY TAG
+    psm2_mq_tag_t rtag = rtagsel; // Useless
+    psm2_mq_status2_t status;
+
+    ret = _real_psm2_mq_iprobe2(mqInfo->realMq, PSM2_MQ_ANY_ADDR,
+                                &rtag, &rtagsel, &status);
+    if (ret == PSM2_OK) {
+      psm2_mq_req_t req;
+      psm2_error_t err;
+      UnexpectedMsg *msg;
+      char *buf = (char *)JALLOC_HELPER_MALLOC(status.msg_length);
+
+      JASSERT(buf != NULL);
+      err = _real_psm2_mq_irecv2(mqInfo->realMq, status.msg_peer,
+                                 &rtag, &rtagsel, 0,
+                                 buf, status.msg_length,
+                                 NULL, &req);
+      JASSERT(err == PSM2_OK);
+      err = _real_psm2_mq_wait2(&req, &status);
+      JASSERT(err == PSM2_OK);
+      JASSERT(status.error_code == PSM2_OK);
+
+      // Now add the message to the unexpected queue
+
+      msg =
+        (UnexpectedMsg *)JALLOC_HELPER_MALLOC(sizeof UnexpectedMsg);
+      JASSERT(msg != NULL);
+      msg->userReq = NULL; // irecv2, iprobe2 and case 3 for imrecv
+      msg->src = Util::realToVirtualPeer(mqInfo, status.msg_peer);
+      msg->buf = buf;
+      msg->stag = status.msg_tag;
+      msg->len = status.msg_length;
+      msg->reqType = RECV;
+
+      mqInfo->ReqCompleted++;
+      mqInfo->unexpectedQueue.push_back(msg);
+    }
+  } while (ret == PSM2_OK);
+}
+
+/*
+ * Deal with isend2, irecv2, and improbe2, make
+ * sure that the number of finished sends are equal to
+ * the number of finished recvs. Drain the unexpected
+ * queue if necessary.
+ *
+ * Step 1:
+ * For each unmatched improbe2 request (those whose do not
+ * have a corresponding imrecv), call imrecv, wait for it
+ * to finish, remove it from the improbe queue, and add it
+ * to the unexpected queue.
+ *
+ * Step 2:
+ * Peek the completion queue, until the send queue and the
+ * improbe queue are empty. Remove the entries from the
+ * corresponding queue, and add them to the completion queue.
+ *
+ * Note:
+ * a. 'Remove' means only deleting the entries from the queue.
+ * The actual request is NOT freed until the application calls
+ * test/wait.
+ *
+ * b. this process will also get some completed irecv requests.
+ * Therefore, we need to check all the three queues. If it is a
+ * recv request, simply remove it from the queue, and add it to
+ * the completion queue.
+ *
+ * Step 3:
+ * (Sleep for 1 second), to make most possible that there is no
+ * data in flight. Probe the hardware, and if there is any
+ * unexpected message, receive them, wait for them to finish,
+ * and add them to the internal unexpected queue. Repeat the
+ * process until probe fails.
+ *
+ * Step 4:
+ * Calculate the sends completed, and the requests completed, publish
+ * the numbers to the coordinator, and subscribe the info from all
+ * other processes, make sure that
+ *
+ *  (total number of sends posted) * 2 ==
+ *  total number of all requests completed
+ *
+ * If not equal, repeat step 3 and 4 (this can be added as an option
+ * for validation)
+ */
+void PsmList::preCheckpoint() {
+  MqInfo *mqInfo;
+  JASSERT(_epList.size() == 1 && _mqList.size() == 1);
+
+  mqInfo = _mqList[0];
+
+  // Step 1
+  drainMprobeRequest(mqInfo);
+  // Step 2
+  drainCompletionQueue(mqInfo);
+  // Step 3
+  sleep(1);
+  drainUnexpectedQueue(mqInfo);
+}
