@@ -5,6 +5,11 @@
 
 using namespace dmtcp;
 
+typedef struct CompletionInfo {
+  uint32_t sendsPosted;
+  uint32_t reqCompleted;
+} CompletionInfo ;
+
 static PsmList *_psmlist = NULL;
 
 PsmList& PsmList::instance() {
@@ -94,7 +99,7 @@ psm2_mq_t PsmList::onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
   mqInfo->realMq = mq;
   mqInfo->tag_order_mask = tag_order_mask;
 
-  mqInfo->sendsPosted = mqInfo->ReqCompleted = 0;
+  mqInfo->sendsPosted = mqInfo->reqCompleted = 0;
 
   if (numopts > 0) {
     JWARNING(false).Text("optkey may not be fully supported for MQ");
@@ -167,7 +172,7 @@ psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
   }
 
   if (ret == PSM2_OK) {
-    mqInfo->ReqCompleted++;
+    mqInfo->reqCompleted++;
     JALLOC_HELPER_FREE(*request);
     *request = PSM2_MQ_REQINVALID;
     if (status != NULL) {
@@ -229,7 +234,7 @@ psm2_error_t PsmList::mqCancel(psm2_mq_req_t *request) {
   return ret;
 }
 
-// Step 1 for pre-checkpoint, see comment for preCheckpoint()
+// Step 1 for drain, see comment for drain()
 static void drainMprobeRequest(MqInfo *mqInfo) {
   vector<MProbeReq*> &mprobeReqLog = mqInfo->mprobeReqLog;
   vector<MProbeReq*>::iterator i = mprobeReqLog.begin();
@@ -265,14 +270,14 @@ static void drainMprobeRequest(MqInfo *mqInfo) {
       msg->len = req->len;
       msg->reqType = MRECV;
 
-      mqInfo->ReqCompleted++;
+      mqInfo->reqCompleted++;
       mprobeReqLog.erase(j);
       mqInfo->unexpectedQueue.push_back(msg);
     }
   }
 }
 
-// Step 2 for pre-checkpoint
+// Step 2 for drain
 static void drainCompletionQueue(MqInfo *mqInfo) {
   psm2_error_t ret;
 
@@ -300,7 +305,7 @@ static void drainCompletionQueue(MqInfo *mqInfo) {
       if (reqType == MRECV) {
         JASSERT(((MProbeReq *)virtualReq)->received);
       }
-      mqInfo->ReqCompleted++;
+      mqInfo->reqCompleted++;
       completion.userReq = virtualReq;
       completion.status = status;
       completion.reqType = reqType;
@@ -311,7 +316,7 @@ static void drainCompletionQueue(MqInfo *mqInfo) {
            ret == PSM2_OK); // There are irecv requests finished
 }
 
-// Step 3 for pre-checkpoint
+// Step 3 for drain
 static void drainUnexpectedQueue(MqInfo *mqInfo) {
   psm2_error_t ret;
 
@@ -354,7 +359,7 @@ static void drainUnexpectedQueue(MqInfo *mqInfo) {
       msg->len = status.msg_length;
       msg->reqType = RECV;
 
-      mqInfo->ReqCompleted++;
+      mqInfo->reqCompleted++;
       mqInfo->unexpectedQueue.push_back(msg);
     }
   } while (ret == PSM2_OK);
@@ -362,9 +367,8 @@ static void drainUnexpectedQueue(MqInfo *mqInfo) {
 
 /*
  * Deal with isend2, irecv2, and improbe2, make
- * sure that the number of finished sends are equal to
- * the number of finished recvs. Drain the unexpected
- * queue if necessary.
+ * sure that isend2 and improbe2 requests are finished.
+ * Drain the unexpected queue if necessary.
  *
  * Step 1:
  * For each unmatched improbe2 request (those whose do not
@@ -394,18 +398,9 @@ static void drainUnexpectedQueue(MqInfo *mqInfo) {
  * and add them to the internal unexpected queue. Repeat the
  * process until probe fails.
  *
- * Step 4:
- * Calculate the sends completed, and the requests completed, publish
- * the numbers to the coordinator, and subscribe the info from all
- * other processes, make sure that
- *
- *  (total number of sends posted) * 2 ==
- *  total number of all requests completed
- *
- * If not equal, repeat step 3 and 4 (this can be added as an option
- * for validation)
  */
-void PsmList::preCheckpoint() {
+
+void PsmList::drain() {
   MqInfo *mqInfo;
   JASSERT(_epList.size() == 1 && _mqList.size() == 1);
 
@@ -418,4 +413,81 @@ void PsmList::preCheckpoint() {
   // Step 3
   sleep(1);
   drainUnexpectedQueue(mqInfo);
+}
+
+/*
+ * Publish the sends completed, and the requests completed
+ * to the coordinator
+ */
+void PsmList::sendCompletionInfo() {
+  MqInfo *mqInfo;
+  CompletionInfo compInfo;
+  pid_t pid;
+
+  JASSERT(_epList.size() == 1 && _mqList.size() == 1);
+  mqInfo = _mqList[0];
+  compInfo.sendsPosted = mqInfo->sendsPosted;
+  compInfo.reqCompleted = mqInfo->reqCompleted;
+  pid = getpid();
+
+  JTRACE("Sending completion info") (compInfo.sendsPosted)
+        (compInfo.reqCompleted);
+  dmtcp_send_key_val_pair_to_coordinator("psmCompInfo",
+                                         &pid, sizeof(pid),
+                                         &compInfo, sizeof(compInfo));
+}
+
+/*
+ * Subscribe the send/req info from all other processes,
+ * make sure that
+ *
+ *  (total number of sends posted) * 2 ==
+ *  total number of all requests completed
+ *
+ * TODO: If not equal, repeat step 3 and 4 (this can be added
+ * as an option for validation)
+ */
+void PsmList::validateCompletionInfo() {
+  char *buf = NULL;
+  int len = 0, i = 0;
+  int ret;
+  uint32_t totalSendPosted = 0, totalReqCompleted = 0;
+
+  ret = dmtcp_send_query_all_to_coordinator("psmCompInfo",
+                                            &buf, &len);
+  JASSERT(ret == 0);
+
+  // Parse the result
+  while (i < len) {
+    pid_t pid;
+    size_t pidSize;
+    CompletionInfo compInfo;
+    size_t compInfoSize;
+
+    memcpy(&pidSize, buf + i, sizeof(pidSize));
+    JASSERT(pidSize == sizeof(pid));
+    i += sizeof(pidSize);
+
+    memcpy(&pid, buf + i, sizeof(pid));
+    i += sizeof(pid);
+
+    memcpy(&compInfoSize, buf + i, sizeof(compInfoSize));
+    JASSERT(compInfoSize == sizeof(compInfo));
+    i += sizeof(compInfoSize);
+
+    memcpy(&compInfo, buf + i, sizeof(compInfo));
+    totalSendPosted += compInfo.sendsPosted;
+    totalReqCompleted += compInfo.reqCompleted;
+    i += sizeof(compInfo);
+
+    JTRACE("Querying completion info") (pid)
+          (compInfo.sendsPosted) (compInfo.reqCompleted);
+  }
+
+  JTRACE("Total number of sends and requests completed")
+        (totalSendPosted) (totalReqCompleted);
+  // TODO: change assertion to another round of draining
+  JASSERT(totalSendPosted * 2 == totalReqCompleted);
+  // We must free the buffer ourselves
+  JALLOC_HELPER_FREE(buf);
 }

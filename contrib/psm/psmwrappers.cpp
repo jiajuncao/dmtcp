@@ -408,7 +408,7 @@ internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
 
   mqInfo->sendsPosted++;
   if (blocking) {
-    mqInfo->ReqCompleted++;
+    mqInfo->reqCompleted++;
   }
 
   return ret;

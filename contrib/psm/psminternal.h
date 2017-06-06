@@ -123,7 +123,7 @@ namespace dmtcp
     // completion (support for blocking sends is trivial to add to satisfy the above
     // equation).
     uint32_t sendsPosted;
-    uint32_t ReqCompleted;
+    uint32_t reqCompleted;
   } MqInfo;
 
   class PsmList {
@@ -175,6 +175,9 @@ namespace dmtcp
       }
       psm2_error_t mqCancel(psm2_mq_req_t *request);
 
+      void drain();
+      void sendCompletionInfo();
+      void validateCompletionInfo();
       void preCheckpoint();
       void postRestart();
 
