@@ -215,6 +215,7 @@ psm2_ep_connect(psm2_ep_t ep,
           array_of_epid_mask[i] != 0) {
         connLog.epIds[array_of_epid[i]] = array_of_epid[i];
         epInfo->remoteEpsAddr[array_of_epaddr[i]] = array_of_epaddr[i];
+        epInfo->epIdToAddr[array_of_epid[i]] = array_of_epaddr[i];
       }
     }
 
@@ -242,6 +243,8 @@ psm2_ep_disconnect(psm2_ep_t ep, int num_of_epaddr,
   JASSERT(ep != NULL);
   epInfo = (EpInfo *)ep;
 
+  JWARNING(false).Text("Not fully supported right now");
+  // TODO: need to fix epIdToAddr
   for ( int i = 0; i < num_of_epaddr; i++) {
     if (array_of_epaddr_mask == NULL ||
         array_of_epaddr_mask[i] != 0) {
@@ -368,10 +371,14 @@ psm2_mq_setopt(psm2_mq_t mq, int option, const void *value) {
 
   JASSERT(mq != NULL);
   mqInfo = (MqInfo *)mq;
+  map<uint32_t, uint64_t*> &opts = mqInfo->opts;
 
   ret = _real_psm2_mq_setopt(mqInfo->realMq, option, value);
   if (ret == PSM2_OK) {
-    mqInfo->opts[option] = *(uint64_t *)value;
+    if (opts.find(option) == opts.end()) {
+      opts[option] = new int64_t;
+    }
+    *(opts[option]) = *(uint64_t *)value;
   }
 
   DMTCP_PLUGIN_ENABLE_CKPT();

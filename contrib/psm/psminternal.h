@@ -25,7 +25,11 @@ namespace dmtcp
     psm2_epid_t realEpId;
     psm2_uuid_t uniqueJobKey;
     struct psm2_ep_open_opts opts;
-    map<psm2_epaddr_t, psm2_epaddr_t> remoteEpsAddr; // Useful only on restart
+    // Useful only on restart
+    map<psm2_epaddr_t, psm2_epaddr_t> remoteEpsAddr;
+    // Mapping from virtual id to virtual addr
+    // Used to build the virtual to real addr mapping
+    map<psm2_epid_t, psm2_epaddr_t> epIdToAddr;
     vector<EpConnLog> connLog;
     psm2_ep_errhandler_t errHandler;
   } EpInfo;
@@ -91,7 +95,7 @@ namespace dmtcp
     psm2_ep_t ep;
     uint64_t tag_order_mask;
     // Only uint32_t is used in the source code, but we use 64 bits for safety
-    map<uint32_t, uint64_t> opts;
+    map<uint32_t, uint64_t*> opts;
     // Used to trace the recv requests. Unmatched requests need to be reposted
     // on restart
     vector<RecvReq*> recvReqLog;
@@ -168,6 +172,7 @@ namespace dmtcp
                          const struct psm2_optkey *opts,
                          int numopts, psm2_mq_t mq);
       void onMqFinalize(psm2_mq_t mq);
+
       // Since mq in not passed in for wait/test/cancel, we need
       // to do the work in PsmList, not the wrappers.
       psm2_error_t mqWait(psm2_mq_req_t *request,

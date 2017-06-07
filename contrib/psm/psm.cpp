@@ -107,7 +107,8 @@ psm2_mq_t PsmList::onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
   }
 
   for (int i = 0; i < numopts; i++) {
-    mqInfo->opts[opts[i].key] = *(uint64_t *)opts[i].value;
+    mqInfo->opts[opts[i].key] = new uint64_t;
+    *(mqInfo->opts[opts[i].key]) = *(uint64_t *)opts[i].value;
   }
 
   _mqList.push_back(mqInfo);
@@ -118,19 +119,27 @@ psm2_mq_t PsmList::onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
 void PsmList::onMqFinalize(psm2_mq_t mq) {
   size_t i;
   bool found = false;
+  MqInfo *mqInfo;
 
   for (i = 0; i < _mqList.size(); i++) {
-    MqInfo *mqInfo = _mqList[i];
+    mqInfo = _mqList[i];
 
     if (mqInfo == (MqInfo *)mq) {
       found = true;
       _mqList.erase(_mqList.begin() + i);
-      delete mqInfo;
       break;
     }
   }
 
   JASSERT(found);
+  // Free the memory for opts
+  {
+    map<uint32_t, uint64_t*>::iterator it;
+    for (it = mqInfo->opts.begin(); it != mqInfo->opts.end(); it++) {
+      delete it->second;
+    }
+  }
+  delete mqInfo;
 }
 
 psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
@@ -498,12 +507,17 @@ void PsmList::validateCompletionInfo() {
  */
 void PsmList::postRestart() {
   EpInfo *epInfo;
+  MqInfo *mqInfo;
   psm2_error_t ret;
 
   JASSERT(_epList.size() == 1);
+  JASSERT(_mqList.size() == 1);
   epInfo = _epList[0];
+  mqInfo = _mqList[0];
 
   _isRestart = true;
+  // Reset the numbers
+  mqInfo->sendsPosted = mqInfo->reqCompleted = 0;
 
   if (_globalErrHandler != PSM2_ERRHANDLER_NO_HANDLER) {
     ret = _real_psm2_error_register_handler(NULL, _globalErrHandler);
@@ -602,6 +616,7 @@ void PsmList::queryEpIdInfo() {
 void PsmList::rebuildConnection() {
   EpInfo *epInfo;
   MqInfo *mqInfo;
+  psm2_error_t err;
 
   JASSERT(_epList.size() == 1);
   JASSERT(_mqList.size() == 1);
@@ -617,16 +632,88 @@ void PsmList::rebuildConnection() {
     int numOfEpIds = epIds.size();
     vector<psm2_epaddr_t> remoteEpsAddr(numOfEpIds, NULL);
     vector<psm2_error_t> errors(numOfEpIds, PSM2_OK);
-    psm2_error_t ret;
 
     for (it = epIds.begin(); it != epIds.end(); it++) {
       remoteEpIds.push_back(it->second);
     }
     JASSERT(numOfEpIds == epInfo->remoteEpsAddr.size());
+    JASSERT(numOfEpIds == epInfo->epIdToAddr.size());
 
-    ret = _real_psm2_ep_connect(epInfo->realEp, numOfEpIds,
+    err = _real_psm2_ep_connect(epInfo->realEp, numOfEpIds,
                                 &remoteEpIds[0], NULL,
                                 &errors[0], &remoteEpsAddr[0], 0);
-    JASSERT(ret == PSM2_OK).Text("Failed to reconnect EP");
+    JASSERT(err == PSM2_OK).Text("Failed to reconnect EP");
+
+    // Now update the virtual-to-real addr mapping
+    for (size_t i = 0, it = epIds.begin();
+         it != epIds.end();
+         i++, it++) {
+      psm2_epid_t virtualId = it->first;
+      psm2_epaddr_t virtualAddr = epInfo->epIdToAddr[virtualId];
+
+      epInfo->remoteEpsAddr[virtualAddr] = remoteEpsAddr[i];
+    }
+  }
+
+  // Re-initialize the MQ
+  {
+    vector<struct psm2_optkey> opts;
+    int numOpts = mqInfo->opts.size();
+    map<uint32_t, uint64_t*>::iterator it;
+
+    for (it = mqInfo->opts.begin(); it != mqInfo->opts.end; it++) {
+      struct psm2_optkey opt = {
+        .key = it->first,
+        .value = it->second
+      };
+
+      opts.push_back(opt);
+    }
+
+    if (numOpts > 0) {
+      ret = _real_psm2_mq_init(epInfo->realEp,
+                               mqInfo->tag_order_mask,
+                               &opts[0], numOpts,
+                               &mqInfo->realMq);
+    } else {
+      ret = _real_psm2_mq_init(epInfo->realEp, mqInfo->tag_order_mask,
+                               NULL, 0, &mqInfo->realMq);
+    }
+
+    JASSERT(ret == PSM2_OK).Text("Failed to re-create MQ");
+  }
+}
+
+// Only irecv2 requests are required to re-post
+void PsmList::refill() {
+  EpInfo *epInfo;
+  MqInfo *mqInfo;
+
+  JASSERT(_epList.size() == 1);
+  JASSERT(_mqList.size() == 1);
+  epInfo = _epList[0];
+  mqInfo = _mqList[0];
+  JASSERT(epInfo == (EpInfo *)mqInfo->ep);
+
+  // At this point, send requests and mprobe requests
+  // have already been drained
+  JASSERT(mqInfo->sendReqLog.size() == 0);
+  JASSERT(mqInfo->mprobeReqLog.size() == 0);
+
+  for (size_t i = 0; i < mqInfo->recvReqLog.size(); i++) {
+    RecvReq *recvReq = mqInfo->recvReqLog[i];
+    psm2_error_t err;
+    psm2_epaddr_t realSrc = PSM2_MQ_ANY_ADDR;
+
+    if (recvReq->src != PSM2_MQ_ANY_ADDR) {
+      realSrc = epInfo->remoteEpsAddr[recvReq->src];
+    }
+
+    ret = _real_psm2_mq_irecv2(mqInfo->realMq, realSrc,
+                               &recvReq->rtag, &recvReq->rtagsel,
+                               recvReq->flags,
+                               recvReq->buf, recvReq->len,
+                               recvReq->context, &recvReq->realReq);
+    JASSERT(ret == PSM2_OK).Text("Failed to re-post irecv2 request");
   }
 }
