@@ -37,10 +37,23 @@ EXTERNC psm2_error_t
 psm2_error_register_handler(psm2_ep_t ep,
                             const psm2_ep_errhandler_t errhandler) {
   psm2_error_t ret;
+  psm2_ep_t realEp = NULL;
+
   DMTCP_PLUGIN_DISABLE_CKPT();
-  JASSERT(ep != NULL);
-  ret = _real_psm2_error_register_handler(((EpInfo *)ep)->realEp,
-                                          errhandler);
+  if (ep != NULL) {
+    realEp = ((EpInfo *)ep)->realEp;
+  }
+  ret = _real_psm2_error_register_handler(realEp, errhandler);
+
+  JASSERT(ret == PSM2_OK);
+  if (errhandler != PSM2_ERRHANDLER_NO_HANDLER) {
+    if (ep == NULL) { // global error handler
+      PsmList::instance().setGlobalerrHandler(errhandler);
+    } else { // per-ep error handler
+      ((EpInfo *)ep)->errHandler = errhandler;
+    }
+  }
+
   DMTCP_PLUGIN_ENABLE_CKPT();
   return ret;
 }

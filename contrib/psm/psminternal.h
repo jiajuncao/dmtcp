@@ -27,6 +27,7 @@ namespace dmtcp
     struct psm2_ep_open_opts opts;
     map<psm2_epaddr_t, psm2_epaddr_t> remoteEpsAddr; // Useful only on restart
     vector<EpConnLog> connLog;
+    psm2_ep_errhandler_t errHandler;
   } EpInfo;
 
   typedef enum {
@@ -140,6 +141,7 @@ namespace dmtcp
         , _initialized(false)
         , _isRestart(false)
         , _numDevices(0)
+        , _globalErrHandler(PSM2_ERRHANDLER_NO_HANDLER)
       { }
 
       static PsmList& instance();
@@ -148,6 +150,9 @@ namespace dmtcp
       void init(int major, int minor);
       void setNumUnits(int numUnits) { _numUnits = numUnits; }
       bool isRestart() { return _isRestart; }
+      void setGlobalerrHandler(const psm2_ep_errhandler_t handler) {
+        _globalErrHandler = handler;_
+      }
 
       // Endpoint operations
       psm2_ep_t onEpOpen(const psm2_uuid_t unique_job_key,
@@ -178,8 +183,11 @@ namespace dmtcp
       void drain();
       void sendCompletionInfo();
       void validateCompletionInfo();
-      void preCheckpoint();
       void postRestart();
+      void sendEpIdInfo();
+      void queryEpIdInfo();
+      void rebuildConnection();
+      void refill();
 
     private:
       vector<EpInfo*> _epList;
@@ -189,6 +197,7 @@ namespace dmtcp
       bool _initialized;
       bool _isRestart;
       int _numUnits;
+      psm2_ep_errhandler_t _globalErrHandler;
 
       typedef enum {
         WAIT,

@@ -38,6 +38,7 @@ psm2_ep_t PsmList::onEpOpen(const psm2_uuid_t unique_job_key,
   epInfo->realEp = ep;
   epInfo->opts = opts;
   epInfo->userEpId = epInfo->realEpId = epid;
+  epInfo->errHandler = PSM2_ERRHANDLER_NO_HANDLER;
   memcpy(epInfo->uniqueJobKey,
          unique_job_key,
          sizeof(psm2_uuid_t));
@@ -490,4 +491,142 @@ void PsmList::validateCompletionInfo() {
   JASSERT(totalSendPosted * 2 == totalReqCompleted);
   // We must free the buffer ourselves
   JALLOC_HELPER_FREE(buf);
+}
+
+/*
+ * Reopen the ep, and register the error handlers
+ */
+void PsmList::postRestart() {
+  EpInfo *epInfo;
+  psm2_error_t ret;
+
+  JASSERT(_epList.size() == 1);
+  epInfo = _epList[0];
+
+  _isRestart = true;
+
+  if (_globalErrHandler != PSM2_ERRHANDLER_NO_HANDLER) {
+    ret = _real_psm2_error_register_handler(NULL, _globalErrHandler);
+    JASSERT(ret == PSM2_OK).Text("Failed to register global handler");
+  }
+
+  ret = _real_psm2_init(&_apiVernoMajor, &api_verno_minor);
+  JASSERT(ret == PSM2_OK).Text("Failed to reinit PSM2 library");
+
+  ret = _real_psm2_ep_open(epInfo->uniqueJobKey, &epInfo->opts,
+                           &epInfo->realEp, &epInfo->realEpId);
+  JASSERT(ret == PSM2_OK).Text("Failed to recreate EP");
+
+  if (epInfo->errHandler != PSM2_ERRHANDLER_NO_HANDLER) {
+    ret = _real_psm2_error_register_handler(epInfo->realEp,
+                                            epInfo->errHandler);
+    JASSERT(ret == PSM2_OK).Text("Failed to resiger EP handler");
+  }
+  JTRACE("Finished post restart");
+}
+
+/*
+ * Publish the ep id info to the coordinator
+ */
+void PsmList::sendEpIdInfo() {
+  EpInfo *epInfo;
+
+  JASSERT(_epList.size() == 1);
+  epInfo = _epList[0];
+
+  dmtcp_send_key_val_pair_to_coordinator("psmEpId",
+                                         &epInfo->userEpId,
+                                         sizeof(epInfo->userEpId),
+                                         &epInfo->realEpId,
+                                         sizeof(epInfo->realEpId));
+}
+
+/*
+ * Query all the ep id database, since most likely it is an
+ * all-to-all connection.
+ *
+ * Update the ep id in the connection log.
+ */
+void PsmList::queryEpIdInfo() {
+  EpInfo *epInfo;
+  int ret;
+  char *buf = NULL;
+  int i = 0, len = 0;
+  map<psm2_epid_t, psm2_epid_t> idMap;
+
+  JASSERT(_epList.size() == 1);
+  epInfo = _epList[0];
+
+  ret = dmtcp_send_query_all_to_coordinator("psmEpId", &buf, &len);
+  JASSERT(ret == 0);
+
+  // build the local ID database
+  while (i < len) {
+    psm2_epid_t virtualId, realId;
+    size_t idSize;
+
+    memcpy(&idSize, buf + i, sizeof(idSize));
+    JASSERT(idSize == sizeof(virtualId));
+    i += sizeof(idSize);
+
+    memcpy(&virtualId, buf + i, sizeof(virtualId));
+    i += sizeof(virtualId);
+
+    memcpy(&idSize, buf + i, sizeof(idSize));
+    JASSERT(idSize == sizeof(realId));
+    i += sizeof(idSize);
+
+    memcpy(&realId, buf + i, sizeof(realId));
+    i += sizeof(realId);
+
+    idMap[virtualId] = realId;
+  }
+
+  // Free the allocated buffer
+  JALLOC_HELPER_FREE(buf);
+
+  // Update the connection log
+  JASSERT(epInfo->connLog.size() == 1);
+  {
+    map<psm2_epid_t, psm2_epid_t> &epIds = epInfo->connLog[0].epIds;
+    map<psm2_epid_t, psm2_epid_t>::iterator it;
+
+    for (it = epIds.begin(); it != epIds.end(); it++) {
+      JASSERT(idMap.find(it->first) != idMap.end());
+      it->second = idMap[it->first];
+    }
+  }
+}
+
+// Re-connect EPs, re-init MQ
+void PsmList::rebuildConnection() {
+  EpInfo *epInfo;
+  MqInfo *mqInfo;
+
+  JASSERT(_epList.size() == 1);
+  JASSERT(_mqList.size() == 1);
+  epInfo = _epList[0];
+  mqInfo = _mqList[0];
+  JASSERT(epInfo == (EpInfo *)mqInfo->ep);
+
+  // Re-connect EPs, update ep addr
+  {
+    vector<psm2_epid_t> remoteEpIds;
+    map<psm2_epid_t, psm2_epid_t>::iterator it;
+    map<psm2_epid_t, psm2_epid_t> &epIds = epInfo->connLog[0].epIds;
+    int numOfEpIds = epIds.size();
+    vector<psm2_epaddr_t> remoteEpsAddr(numOfEpIds, NULL);
+    vector<psm2_error_t> errors(numOfEpIds, PSM2_OK);
+    psm2_error_t ret;
+
+    for (it = epIds.begin(); it != epIds.end(); it++) {
+      remoteEpIds.push_back(it->second);
+    }
+    JASSERT(numOfEpIds == epInfo->remoteEpsAddr.size());
+
+    ret = _real_psm2_ep_connect(epInfo->realEp, numOfEpIds,
+                                &remoteEpIds[0], NULL,
+                                &errors[0], &remoteEpsAddr[0], 0);
+    JASSERT(ret == PSM2_OK).Text("Failed to reconnect EP");
+  }
 }
