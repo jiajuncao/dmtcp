@@ -10,6 +10,36 @@ typedef struct CompletionInfo {
   uint32_t reqCompleted;
 } CompletionInfo ;
 
+static DmtcpBarrier psmBarriers[] = {
+  { DMTCP_PRIVATE_BARRIER_PRE_CKPT, PsmList::drain, "DRAIN" },
+  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, PsmList::sendCompletionInfo,
+    "SEND_COMPLETION" },
+  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, PsmList::validateCompletionInfo,
+    "VALIDATE_COMPLETION" },
+  { DMTCP_PRIVATE_BARRIER_RESTART, PsmList::postRestart,
+    "POST_RESTART" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::sendEpIdInfo,
+    "SEND_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::queryEpIdInfo,
+    "QUERY_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::rebuildConnection,
+    "REBUILD_CONNECTION" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::refill, "REFILL"}
+}
+
+DmtcpPluginDescriptor_t psmPlugin = {
+  DMTCP_PLUGIN_API_VERSION,
+  PACKAGE_VERSION,
+  "psm",
+  "DMTCP",
+  "dmtcp@ccs.neu.edu",
+  "PSM2 plugin",
+  DMTCP_DECL_BARRIERS(psmBarriers),
+  NULL
+};
+
+DMTCP_DECL_PLUGIN(psmPlugin);
+
 static PsmList *_psmlist = NULL;
 
 PsmList& PsmList::instance() {
