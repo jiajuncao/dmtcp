@@ -1,4 +1,3 @@
-#include "psmwrappers.h"
 #include <psm2.h>
 #include <psm2_mq.h>
 #include <string.h>
@@ -6,6 +5,7 @@
 #include "jassert.h"
 #include "psminternal.h"
 #include "psmutil.h"
+#include "psmwrappers.h"
 
 using namespace dmtcp;
 
@@ -230,7 +230,7 @@ psm2_ep_connect(psm2_ep_t ep,
 
 EXTERNC psm2_error_t
 psm2_ep_disconnect(psm2_ep_t ep, int num_of_epaddr,
-                   const psm2_epaddr_t *array_of_epaddr,
+                   psm2_epaddr_t *array_of_epaddr,
                    const int *array_of_epaddr_mask,
                    psm2_error_t *array_of_errors, int64_t timeout) {
   psm2_error_t ret;
@@ -259,13 +259,13 @@ psm2_ep_disconnect(psm2_ep_t ep, int num_of_epaddr,
   }
 
   JASSERT(epInfo->connLog.size() == 1);
-  JASSERT(num == epInfo->connLog[0].size());
+  JASSERT(num == epInfo->connLog[0].epIds.size());
 
   epInfo->connLog.clear();
 
   ret = _real_psm2_ep_disconnect(epInfo->realEp,
                                  num_of_epaddr, &realArrayEpAddr[0],
-                                 array_of_epid_mask, array_of_errors,
+                                 array_of_epaddr_mask, array_of_errors,
                                  timeout);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
@@ -376,7 +376,7 @@ psm2_mq_setopt(psm2_mq_t mq, int option, const void *value) {
   ret = _real_psm2_mq_setopt(mqInfo->realMq, option, value);
   if (ret == PSM2_OK) {
     if (opts.find(option) == opts.end()) {
-      opts[option] = new int64_t;
+      opts[option] = (uint64_t *)(new uint64_t);
     }
     *(opts[option]) = *(uint64_t *)value;
   }
@@ -759,7 +759,7 @@ psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
       UnexpectedMsg *msg = uq[i];
 
       if (msg->reqType == MRECV &&
-          (msg->userReq == *req || msg == *req)) { // Found a match, case 2 and 3
+          (msg->userReq == *req || (psm2_mq_req_t)msg == *req)) { // Found a match, case 2 and 3
         CompWrapper completion;
         uint32_t actualLen = (len <= msg->len ? len : msg->len);
 
@@ -791,7 +791,7 @@ psm2_mq_imrecv(psm2_mq_t mq, uint32_t flags,
           JASSERT(*req == msg->userReq);
           JALLOC_HELPER_FREE(msg); // *req will be freed on completion
         } else { // Case 3
-          JASSERT(*req == msg);
+          JASSERT(*req == (psm2_mq_req_t)msg);
         }
         DMTCP_PLUGIN_ENABLE_CKPT();
         return ret;
@@ -874,7 +874,7 @@ psm2_mq_wait2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  ret = PsmList::mqWait(request, status);
+  ret = PsmList::instance().mqWait(request, status);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
 
@@ -887,7 +887,7 @@ psm2_mq_test2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  ret = PsmList::mqTest(request, status);
+  ret = PsmList::instance().mqTest(request, status);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
 

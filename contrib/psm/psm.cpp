@@ -1,4 +1,5 @@
 #include <string.h>
+#include "config.h"
 #include "psminternal.h"
 #include "psmwrappers.h"
 #include "psmutil.h"
@@ -10,22 +11,51 @@ typedef struct CompletionInfo {
   uint32_t reqCompleted;
 } CompletionInfo ;
 
-static DmtcpBarrier psmBarriers[] = {
-  { DMTCP_PRIVATE_BARRIER_PRE_CKPT, PsmList::drain, "DRAIN" },
-  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, PsmList::sendCompletionInfo,
-    "SEND_COMPLETION" },
-  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, PsmList::validateCompletionInfo,
-    "VALIDATE_COMPLETION" },
-  { DMTCP_PRIVATE_BARRIER_RESTART, PsmList::postRestart,
-    "POST_RESTART" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::sendEpIdInfo,
-    "SEND_EP_INFO" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::queryEpIdInfo,
-    "QUERY_EP_INFO" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::rebuildConnection,
-    "REBUILD_CONNECTION" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, PsmList::refill, "REFILL"}
+static void drain() {
+  PsmList::instance().drain();
 }
+
+static void preCheckpointPhaseOne() {
+  PsmList::instance().sendCompletionInfo();
+}
+
+static void preCheckpointPhaseTwo() {
+  PsmList::instance().validateCompletionInfo();
+}
+
+static void postRestart() {
+  PsmList::instance().postRestart();
+}
+
+static void nsRegisterData() {
+  PsmList::instance().sendEpIdInfo();
+}
+
+static void nsQueryData() {
+  PsmList::instance().queryEpIdInfo();
+}
+
+static void refillPhaseOne() {
+  PsmList::instance().rebuildConnection();
+}
+
+static void refillPhaseTwo() {
+  PsmList::instance().refill();
+}
+
+static DmtcpBarrier psmBarriers[] = {
+  { DMTCP_PRIVATE_BARRIER_PRE_CKPT, drain, "DRAIN" },
+  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, preCheckpointPhaseOne,
+    "SEND_COMPLETION" },
+  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, preCheckpointPhaseTwo,
+    "VALIDATE_COMPLETION" },
+  { DMTCP_PRIVATE_BARRIER_RESTART, postRestart, "POST_RESTART" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, nsRegisterData, "SEND_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, nsQueryData, "QUERY_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseOne,
+    "REBUILD_CONNECTION" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseTwo, "REFILL"}
+};
 
 DmtcpPluginDescriptor_t psmPlugin = {
   DMTCP_PLUGIN_API_VERSION,
@@ -193,7 +223,7 @@ psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
       if (status != NULL) {
         *status = completion.status;
       }
-      mqInfo->internalCq.erase(i);
+      mqInfo->internalCq.erase(mqInfo->internalCq.begin() + i);
       // *request here can hold any of the following:
       // RecvReq, MProbeReq, SendReq, UnexpectedMsg
       JALLOC_HELPER_FREE(*request);
@@ -253,14 +283,14 @@ psm2_error_t PsmList::mqCancel(psm2_mq_req_t *request) {
     vector<RecvReq*> &recvReqLog = mqInfo->recvReqLog;
 
     // Must return the real request to the mq library
-    JASSERT(_real_psm2_mq_test2(&realReq) == PSM2_OK);
+    JASSERT(_real_psm2_mq_test2(&realReq, NULL) == PSM2_OK);
 
     for (size_t i = 0; i < recvReqLog.size(); i++) {
-      if (recvReqLog[i] == *request) {
+      if ((psm2_mq_req_t)recvReqLog[i] == *request) {
         CompWrapper completion;
 
         found = true;
-        recvReqLog.erase(i);
+        recvReqLog.erase(recvReqLog.begin() + i);
         // Do not care about status
         completion.reqType = RECV;
         completion.userReq = *request;
@@ -301,7 +331,7 @@ static void drainMprobeRequest(MqInfo *mqInfo) {
       JASSERT(status.error_code == PSM2_OK);
 
       msg =
-        (UnexpectedMsg *)JALLOC_HELPER_MALLOC(sizeof UnexpectedMsg);
+        (UnexpectedMsg *)JALLOC_HELPER_MALLOC(sizeof(UnexpectedMsg));
       JASSERT(msg != NULL);
       msg->userReq = (psm2_mq_req_t)req; // Case 2 for imrecv
       msg->src = Util::realToVirtualPeer(mqInfo, status.msg_peer);
@@ -361,13 +391,12 @@ static void drainUnexpectedQueue(MqInfo *mqInfo) {
   psm2_error_t ret;
 
   do {
-    psm2_mq_tag_t rtagsel = {
-      .tag0 = 0,
-      .tag1 = 0,
-      .tag2 = 0
-    }; // ANY TAG
-    psm2_mq_tag_t rtag = rtagsel; // Useless
+    psm2_mq_tag_t rtagsel;
+    psm2_mq_tag_t rtag;
     psm2_mq_status2_t status;
+
+    rtagsel.tag0 = rtagsel.tag1 = rtagsel.tag2 = 0; // ANY TAG
+    rtag = rtagsel; // Useless
 
     ret = _real_psm2_mq_iprobe2(mqInfo->realMq, PSM2_MQ_ANY_ADDR,
                                 &rtag, &rtagsel, &status);
@@ -390,7 +419,7 @@ static void drainUnexpectedQueue(MqInfo *mqInfo) {
       // Now add the message to the unexpected queue
 
       msg =
-        (UnexpectedMsg *)JALLOC_HELPER_MALLOC(sizeof UnexpectedMsg);
+        (UnexpectedMsg *)JALLOC_HELPER_MALLOC(sizeof(UnexpectedMsg));
       JASSERT(msg != NULL);
       msg->userReq = NULL; // irecv2, iprobe2 and case 3 for imrecv
       msg->src = Util::realToVirtualPeer(mqInfo, status.msg_peer);
@@ -494,7 +523,7 @@ void PsmList::validateCompletionInfo() {
   uint32_t totalSendPosted = 0, totalReqCompleted = 0;
 
   ret = dmtcp_send_query_all_to_coordinator("psmCompInfo",
-                                            &buf, &len);
+                                            (void **)&buf, &len);
   JASSERT(ret == 0);
 
   // Parse the result
@@ -554,7 +583,7 @@ void PsmList::postRestart() {
     JASSERT(ret == PSM2_OK).Text("Failed to register global handler");
   }
 
-  ret = _real_psm2_init(&_apiVernoMajor, &api_verno_minor);
+  ret = _real_psm2_init(&_apiVernoMajor, &_apiVernoMinor);
   JASSERT(ret == PSM2_OK).Text("Failed to reinit PSM2 library");
 
   ret = _real_psm2_ep_open(epInfo->uniqueJobKey, &epInfo->opts,
@@ -601,7 +630,8 @@ void PsmList::queryEpIdInfo() {
   JASSERT(_epList.size() == 1);
   epInfo = _epList[0];
 
-  ret = dmtcp_send_query_all_to_coordinator("psmEpId", &buf, &len);
+  ret = dmtcp_send_query_all_to_coordinator("psmEpId",
+                                            (void **)&buf, &len);
   JASSERT(ret == 0);
 
   // build the local ID database
@@ -662,6 +692,7 @@ void PsmList::rebuildConnection() {
     int numOfEpIds = epIds.size();
     vector<psm2_epaddr_t> remoteEpsAddr(numOfEpIds, NULL);
     vector<psm2_error_t> errors(numOfEpIds, PSM2_OK);
+    size_t i;
 
     for (it = epIds.begin(); it != epIds.end(); it++) {
       remoteEpIds.push_back(it->second);
@@ -675,7 +706,7 @@ void PsmList::rebuildConnection() {
     JASSERT(err == PSM2_OK).Text("Failed to reconnect EP");
 
     // Now update the virtual-to-real addr mapping
-    for (size_t i = 0, it = epIds.begin();
+    for (i = 0, it = epIds.begin();
          it != epIds.end();
          i++, it++) {
       psm2_epid_t virtualId = it->first;
@@ -690,8 +721,9 @@ void PsmList::rebuildConnection() {
     vector<struct psm2_optkey> opts;
     int numOpts = mqInfo->opts.size();
     map<uint32_t, uint64_t*>::iterator it;
+    psm2_error_t ret;
 
-    for (it = mqInfo->opts.begin(); it != mqInfo->opts.end; it++) {
+    for (it = mqInfo->opts.begin(); it != mqInfo->opts.end(); it++) {
       struct psm2_optkey opt = {
         .key = it->first,
         .value = it->second
@@ -734,6 +766,7 @@ void PsmList::refill() {
     RecvReq *recvReq = mqInfo->recvReqLog[i];
     psm2_error_t err;
     psm2_epaddr_t realSrc = PSM2_MQ_ANY_ADDR;
+    psm2_error_t ret;
 
     if (recvReq->src != PSM2_MQ_ANY_ADDR) {
       realSrc = epInfo->remoteEpsAddr[recvReq->src];

@@ -60,7 +60,7 @@ realToVirtualReq(MqInfo *mqInfo, psm2_mq_req_t realReq,
     SendReq *sendReq = mqInfo->sendReqLog[i];
 
     if (sendReq->realReq == realReq) {
-      virtualReq = sendReq;
+      virtualReq = (psm2_mq_req_t)sendReq;
       *type = SEND;
       if (remove) {
         mqInfo->sendReqLog.erase(mqInfo->sendReqLog.begin() + i);
@@ -75,7 +75,7 @@ realToVirtualReq(MqInfo *mqInfo, psm2_mq_req_t realReq,
       RecvReq *recvReq = mqInfo->recvReqLog[i];
 
       if (recvReq->realReq == realReq) {
-        virtualReq = recvReq;
+        virtualReq = (psm2_mq_req_t)recvReq;
         *type = RECV;
         if (remove) {
           mqInfo->recvReqLog.erase(mqInfo->recvReqLog.begin() + i);
@@ -91,8 +91,8 @@ realToVirtualReq(MqInfo *mqInfo, psm2_mq_req_t realReq,
       MProbeReq *mprobeReq = mqInfo->mprobeReqLog[i];
 
       if (mprobeReq->realReq == realReq) {
-        virtualReq = mprobeReq;
-        *reqType = MRECV;
+        virtualReq = (psm2_mq_req_t)mprobeReq;
+        *type = MRECV;
         if (remove) {
           mqInfo->mprobeReqLog.erase(mqInfo->mprobeReqLog.begin() + i);
         }

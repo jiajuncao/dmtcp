@@ -144,7 +144,7 @@ namespace dmtcp
         , _apiVernoMinor(-1)
         , _initialized(false)
         , _isRestart(false)
-        , _numDevices(0)
+        , _numUnits(0)
         , _globalErrHandler(PSM2_ERRHANDLER_NO_HANDLER)
       { }
 
@@ -155,7 +155,7 @@ namespace dmtcp
       void setNumUnits(int numUnits) { _numUnits = numUnits; }
       bool isRestart() { return _isRestart; }
       void setGlobalerrHandler(const psm2_ep_errhandler_t handler) {
-        _globalErrHandler = handler;_
+        _globalErrHandler = handler;
       }
 
       // Endpoint operations
@@ -213,7 +213,7 @@ namespace dmtcp
       psm2_error_t mqCompletion(psm2_mq_req_t *request,
                                 psm2_mq_status2_t *status,
                                 CompletionOp op);
-  }
+  };
 }
 
 #endif // ifndef PSMINTERNAL_H
