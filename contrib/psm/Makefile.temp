@@ -1,8 +1,0 @@
-psmwrappers.o: psmwrappers.cpp psmwrappers.h
-	g++ -g3 -O0 psmwrappers.cpp -c -o psmwrappers.o
-
-psm.o: psm.cpp psminternal.h
-	g++ -g3 -O0 psm.cpp -c -o psm.o
-
-dmtcp_psm.so: psmwrappers.o psm.o
-	g++ -fPIC -o dmtcp_psm.so psmwrappers.o psm.o -shared -Wl,--unresolved-symbols=ignore-all
