@@ -251,6 +251,7 @@ FileConnList::prepareShmList()
 
       if (Util::isNscdArea(area) ||
           Util::isIBShmArea(area) ||
+          Util::isPsmShmArea(area) ||
           Util::isSysVShmArea(area)) {
         continue;
       }
@@ -510,7 +511,8 @@ FileConnList::processFileConnection(int fd,
   JASSERT(fstat(fd, &statbuf) == 0);
 
   if (strstr(device.c_str(), "infiniband/uverbs") ||
-      strstr(device.c_str(), "uverbs-event")) {
+      strstr(device.c_str(), "uverbs-event") ||
+      strstr(device.c_str(), "/dev/hfi")) {
     return;
   }
 

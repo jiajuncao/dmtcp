@@ -300,7 +300,8 @@ FileConnection::refill(bool isRestart)
     return;
   }
   if (strstr(_path.c_str(), "infiniband/uverbs") ||
-      strstr(_path.c_str(), "uverbs-event")) {
+      strstr(_path.c_str(), "uverbs-event") ||
+      strstr(_path.c_str(), "/dev/hfi")) {
     return;
   }
 

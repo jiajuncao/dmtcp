@@ -129,6 +129,7 @@ bool createDirectoryTree(const string &path);
 bool isNscdArea(const ProcMapsArea &area);
 bool isSysVShmArea(const ProcMapsArea &area);
 bool isIBShmArea(const ProcMapsArea &area);
+bool isPsmShmArea(const ProcMapsArea &area);
 
 ssize_t writeAll(int fd, const void *buf, size_t count);
 ssize_t readAll(int fd, void *buf, size_t count);

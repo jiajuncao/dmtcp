@@ -754,11 +754,18 @@ Util::isSysVShmArea(const ProcMapsArea &area)
   return strStartsWith(area.name, "/SYSV");
 }
 
-// Check for Sys V shared memory area.
+// Check for InfiniBand devices.
 bool
 Util::isIBShmArea(const ProcMapsArea &area)
 {
   return strStartsWith(area.name, "/dev/infiniband/uverbs");
+}
+
+// Check for Omni-Path devices.
+bool
+Util::isPsmShmArea(const ProcMapsArea &area)
+{
+  return strStartsWith(area.name, "/dev/hfi");
 }
 
 void
