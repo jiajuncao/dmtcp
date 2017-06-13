@@ -71,6 +71,8 @@ int main(int argc, char **argv){
 	psm2_mq_t q;
 	psm2_mq_req_t req_mq;
 	int is_server = 0;
+        psm2_mq_tag_t tag = {0};
+        psm2_mq_tag_t tagsel = {0};
 
 	if (argc > 2){
 		die("To run in server mode, invoke as ./psm2-demo -s\n" \
@@ -150,10 +152,11 @@ int main(int argc, char **argv){
 	}
 	printf("PSM2 MQ init done.\n");
 	if (is_server){
+        while(1) {
 		/* Post the receive request */
-		if ((rc = psm2_mq_irecv(q,
-		0xABCD, /* message tag */
-		(uint64_t)-1, /* message tag mask */
+		if ((rc = psm2_mq_irecv2(q, PSM2_MQ_ANY_ADDR,
+		&tag, /* message tag */
+		&tagsel, /* message tag mask */
 		0, /* no flags */
 		msgbuf, BUFFER_LENGTH,
 		NULL, /* no context to add */
@@ -163,27 +166,34 @@ int main(int argc, char **argv){
 	}
 	printf("PSM2 MQ irecv() posted\n");
 	/* Wait until the message arrives */
-	if ((rc = psm2_mq_wait(&req_mq, NULL)) != PSM2_OK){
+        psm2_mq_status2_t status;
+	if ((rc = psm2_mq_wait2(&req_mq, &status)) != PSM2_OK){
 		die("couldn't wait for the irecv", rc);
 	}
 		printf("PSM2 MQ wait() done.\n");
+                printf("Status: %p, %d, %d, %d\n", status.msg_peer, status.msg_length, status.nbytes, status.error_code);
 		printf("Message from client:\n");
 		printf("%s", msgbuf);
 		unlink("psm2-demo-server-epid");
+                sleep(1);
+            }
 	} else {
 		/* Say hello */
 		snprintf(msgbuf, BUFFER_LENGTH,
 		"Hello world from epid=0x%lx, pid=%d.\n",
 		myepid, getpid());
-		if ((rc = psm2_mq_send(q,
+            while(1) {
+		if ((rc = psm2_mq_send2(q,
 			epaddr_array[0], /* destination epaddr */
 			0, /* no flags */
-			0xABCD, /* tag */
+			&tag, /* tag */
 			msgbuf, BUFFER_LENGTH
 			)) != PSM2_OK){
 				die("couldn't post psm2_mq_isend", rc);
 		}
 		printf("PSM2 MQ send() done.\n");
+                sleep(1);
+            }
 	}
 	/* Close down the MQ */
 	if ((rc = psm2_mq_finalize(q)) != PSM2_OK){
