@@ -9,7 +9,7 @@ using namespace dmtcp;
 typedef struct CompletionInfo {
   uint32_t sendsPosted;
   uint32_t reqCompleted;
-} CompletionInfo ;
+} CompletionInfo;
 
 static void drain() {
   PsmList::instance().drain();
@@ -499,9 +499,9 @@ void PsmList::sendCompletionInfo() {
   compInfo.reqCompleted = mqInfo->reqCompleted;
   pid = getpid();
 
-  JTRACE("Sending completion info") (compInfo.sendsPosted)
+  JNOTE("Sending completion info") (compInfo.sendsPosted)
         (compInfo.reqCompleted);
-  dmtcp_send_key_val_pair_to_coordinator("psmCompInfo",
+  dmtcp_send_key_val_pair_to_coordinator("psmComp",
                                          &pid, sizeof(pid),
                                          &compInfo, sizeof(compInfo));
 }
@@ -522,7 +522,7 @@ void PsmList::validateCompletionInfo() {
   int ret;
   uint32_t totalSendPosted = 0, totalReqCompleted = 0;
 
-  ret = dmtcp_send_query_all_to_coordinator("psmCompInfo",
+  ret = dmtcp_send_query_all_to_coordinator("psmComp",
                                             (void **)&buf, &len);
   JASSERT(ret == 0);
 
@@ -588,7 +588,7 @@ void PsmList::postRestart() {
 
   ret = _real_psm2_ep_open(epInfo->uniqueJobKey, &epInfo->opts,
                            &epInfo->realEp, &epInfo->realEpId);
-  JASSERT(ret == PSM2_OK).Text("Failed to recreate EP");
+  JASSERT(ret == PSM2_OK) (ret).Text("Failed to recreate EP");
 
   if (epInfo->errHandler != PSM2_ERRHANDLER_NO_HANDLER) {
     ret = _real_psm2_error_register_handler(epInfo->realEp,
@@ -607,6 +607,7 @@ void PsmList::sendEpIdInfo() {
   JASSERT(_epList.size() == 1);
   epInfo = _epList[0];
 
+  JNOTE("Publishing EP id") (epInfo->userEpId) (epInfo->realEpId);
   dmtcp_send_key_val_pair_to_coordinator("psmEpId",
                                          &epInfo->userEpId,
                                          sizeof(epInfo->userEpId),
@@ -660,8 +661,8 @@ void PsmList::queryEpIdInfo() {
   JALLOC_HELPER_FREE(buf);
 
   // Update the connection log
-  JASSERT(epInfo->connLog.size() == 1);
-  {
+  JASSERT(epInfo->connLog.size() <= 1);
+  if (epInfo->connLog.size() == 1) {
     map<psm2_epid_t, psm2_epid_t> &epIds = epInfo->connLog[0].epIds;
     map<psm2_epid_t, psm2_epid_t>::iterator it;
 
@@ -685,7 +686,7 @@ void PsmList::rebuildConnection() {
   JASSERT(epInfo == (EpInfo *)mqInfo->ep);
 
   // Re-connect EPs, update ep addr
-  {
+  if (epInfo->connLog.size() == 1) {
     vector<psm2_epid_t> remoteEpIds;
     map<psm2_epid_t, psm2_epid_t>::iterator it;
     map<psm2_epid_t, psm2_epid_t> &epIds = epInfo->connLog[0].epIds;
@@ -703,7 +704,7 @@ void PsmList::rebuildConnection() {
     err = _real_psm2_ep_connect(epInfo->realEp, numOfEpIds,
                                 &remoteEpIds[0], NULL,
                                 &errors[0], &remoteEpsAddr[0], 0);
-    JASSERT(err == PSM2_OK).Text("Failed to reconnect EP");
+    JASSERT(err == PSM2_OK) (err).Text("Failed to reconnect EP");
 
     // Now update the virtual-to-real addr mapping
     for (i = 0, it = epIds.begin();
