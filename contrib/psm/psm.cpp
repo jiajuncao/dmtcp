@@ -23,8 +23,16 @@ static void preCheckpointPhaseTwo() {
   PsmList::instance().validateCompletionInfo();
 }
 
+static void preCheckpointPhaseThree() {
+  PsmList::instance().closeConnection();
+}
+
+static void resume() {
+  PsmList::instance().reInit(false);
+}
+
 static void postRestart() {
-  PsmList::instance().postRestart();
+  PsmList::instance().reInit(true);
 }
 
 static void nsRegisterData() {
@@ -49,12 +57,24 @@ static DmtcpBarrier psmBarriers[] = {
     "SEND_COMPLETION" },
   { DMTCP_GLOBAL_BARRIER_PRE_CKPT, preCheckpointPhaseTwo,
     "VALIDATE_COMPLETION" },
-  { DMTCP_PRIVATE_BARRIER_RESTART, postRestart, "POST_RESTART" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, nsRegisterData, "SEND_EP_INFO" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, nsQueryData, "QUERY_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_PRE_CKPT, preCheckpointPhaseThree,
+    "CLOSE_CONNECTION" },
+  { DMTCP_PRIVATE_BARRIER_RESUME, resume, "RESUME" },
+  { DMTCP_GLOBAL_BARRIER_RESUME, nsRegisterData,
+    "RESUME_SEND_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESUME, nsQueryData,
+    "RESUME_QUERY_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESUME, refillPhaseOne,
+    "RESUME_REBUILD_CONNECTION" },
+  { DMTCP_GLOBAL_BARRIER_RESUME, refillPhaseTwo, "RESUME_REFILL"},
+  { DMTCP_PRIVATE_BARRIER_RESTART, postRestart, "RESTART" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, nsRegisterData,
+    "RESTART_SEND_EP_INFO" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, nsQueryData,
+    "RESTART_QUERY_EP_INFO" },
   { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseOne,
-    "REBUILD_CONNECTION" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseTwo, "REFILL"}
+    "RESTART_REBUILD_CONNECTION" },
+  { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseTwo, "RESTART_REFILL"}
 };
 
 DmtcpPluginDescriptor_t psmPlugin = {
@@ -561,10 +581,7 @@ void PsmList::validateCompletionInfo() {
   JALLOC_HELPER_FREE(buf);
 }
 
-/*
- * Reopen the ep, and register the error handlers
- */
-void PsmList::postRestart() {
+void PsmList::closeConnection() {
   EpInfo *epInfo;
   MqInfo *mqInfo;
   psm2_error_t ret;
@@ -574,17 +591,41 @@ void PsmList::postRestart() {
   epInfo = _epList[0];
   mqInfo = _mqList[0];
 
-  _isRestart = true;
+  ret = _real_psm2_mq_finalize(mqInfo->realMq);
+  JASSERT(ret == PSM2_OK) (ret).Text("Failed to finalize mq");
+
+  ret = _real_psm2_ep_close(epInfo->realEp,
+                            PSM2_EP_CLOSE_GRACEFUL, 0);
+  JASSERT(ret == PSM2_OK) (ret).Text("Failed to close ep");
+}
+
+/*
+ * Reopen the ep, and register the error handlers
+ */
+void PsmList::reInit(bool isRestart) {
+  EpInfo *epInfo;
+  MqInfo *mqInfo;
+  psm2_error_t ret;
+
+  JASSERT(_epList.size() == 1);
+  JASSERT(_mqList.size() == 1);
+  epInfo = _epList[0];
+  mqInfo = _mqList[0];
+
+  _isRestart = isRestart;
   // Reset the numbers
   mqInfo->sendsPosted = mqInfo->reqCompleted = 0;
 
-  if (_globalErrHandler != PSM2_ERRHANDLER_NO_HANDLER) {
+  if (isRestart &&
+      _globalErrHandler != PSM2_ERRHANDLER_NO_HANDLER) {
     ret = _real_psm2_error_register_handler(NULL, _globalErrHandler);
     JASSERT(ret == PSM2_OK).Text("Failed to register global handler");
   }
 
-  ret = _real_psm2_init(&_apiVernoMajor, &_apiVernoMinor);
-  JASSERT(ret == PSM2_OK).Text("Failed to reinit PSM2 library");
+  if (isRestart) {
+    ret = _real_psm2_init(&_apiVernoMajor, &_apiVernoMinor);
+    JASSERT(ret == PSM2_OK).Text("Failed to reinit PSM2 library");
+  }
 
   ret = _real_psm2_ep_open(epInfo->uniqueJobKey, &epInfo->opts,
                            &epInfo->realEp, &epInfo->realEpId);
@@ -595,7 +636,7 @@ void PsmList::postRestart() {
                                             epInfo->errHandler);
     JASSERT(ret == PSM2_OK).Text("Failed to resiger EP handler");
   }
-  JTRACE("Finished post restart");
+  JTRACE("Finished re-inialization");
 }
 
 /*

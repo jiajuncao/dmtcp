@@ -188,7 +188,8 @@ namespace dmtcp
       void drain();
       void sendCompletionInfo();
       void validateCompletionInfo();
-      void postRestart();
+      void closeConnection();
+      void reInit(bool isRestart);
       void sendEpIdInfo();
       void queryEpIdInfo();
       void rebuildConnection();
