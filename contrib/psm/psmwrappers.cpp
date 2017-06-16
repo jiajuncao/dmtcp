@@ -193,7 +193,7 @@ psm2_ep_connect(psm2_ep_t ep,
   DMTCP_PLUGIN_DISABLE_CKPT();
 
   JASSERT(ep != NULL);
-  JASSERT(!PsmList::instance().isRestart());
+  JASSERT(dmtcp_get_generation() == 0);
 
   epInfo = (EpInfo *)ep;
 
@@ -406,7 +406,7 @@ internal_mq_send(psm2_mq_t mq, psm2_epaddr_t dest,
     JASSERT(req != NULL);
   }
 
-  if (PsmList::instance().isRestart()) {
+  if (dmtcp_get_generation() > 0) {
     realDest = epInfo->remoteEpsAddr[dest];
   }
 
@@ -575,7 +575,7 @@ psm2_mq_irecv2(psm2_mq_t mq, psm2_epaddr_t src,
     RecvReq *recvReq;
     psm2_mq_req_t realReq;
 
-    if (PsmList::instance().isRestart() &&
+    if (dmtcp_get_generation() > 0 &&
         src != PSM2_MQ_ANY_ADDR) {
       realSrc = epInfo->remoteEpsAddr[src];
     }
@@ -638,7 +638,7 @@ psm2_mq_iprobe2(psm2_mq_t mq, psm2_epaddr_t src,
       Util::status_copy(msg, status);
     }
   } else {
-    if (PsmList::instance().isRestart() &&
+    if (dmtcp_get_generation() > 0 &&
         src != PSM2_MQ_ANY_ADDR) {
       realSrc = epInfo->remoteEpsAddr[src];
     }
@@ -701,7 +701,7 @@ psm2_mq_improbe2(psm2_mq_t mq, psm2_epaddr_t src,
     psm2_mq_status2_t realStatus;
     psm2_mq_req_t realReq;
 
-    if (PsmList::instance().isRestart() &&
+    if (dmtcp_get_generation() > 0 &&
         src != PSM2_MQ_ANY_ADDR) {
       realSrc = epInfo->remoteEpsAddr[src];
     }

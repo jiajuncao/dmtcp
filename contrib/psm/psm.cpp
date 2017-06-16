@@ -111,7 +111,7 @@ psm2_ep_t PsmList::onEpOpen(const psm2_uuid_t unique_job_key,
                             psm2_epid_t epid) {
   EpInfo *epInfo;
 
-  JASSERT(!_isRestart);
+  JASSERT(dmtcp_get_generation() == 0);
 
   epInfo = new EpInfo();
 
@@ -149,7 +149,7 @@ void PsmList::epAddrSetLabel(psm2_epaddr_t epaddr,
   size_t i;
   map<psm2_epaddr_t, psm2_epaddr_t>::iterator epAddrIt;
 
-  if (!_isRestart) {
+  if (dmtcp_get_generation() == 0) {
     return _real_psm2_epaddr_setlabel(epaddr, epaddr_label_string);
   }
 
@@ -172,7 +172,7 @@ psm2_mq_t PsmList::onMqInit(psm2_ep_t ep, uint64_t tag_order_mask,
                        int numopts, psm2_mq_t mq) {
   MqInfo *mqInfo;
 
-  JASSERT(!_isRestart);
+  JASSERT(dmtcp_get_generation() == 0);
 
   mqInfo = new MqInfo();
 

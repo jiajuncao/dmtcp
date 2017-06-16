@@ -1,6 +1,7 @@
 #ifndef PSMUTIL_H
 #define PSMUTIL_H
 
+#include "dmtcp.h"
 #include "psminternal.h"
 
 namespace dmtcp {
@@ -31,7 +32,7 @@ realToVirtualPeer(MqInfo *mqInfo, psm2_epaddr_t peer) {
   JASSERT(mqInfo->ep != NULL);
   epInfo = (EpInfo *)(mqInfo->ep);
 
-  if (PsmList::instance().isRestart()) {
+  if (dmtcp_get_generation() > 0) {
     bool found = false;
     map<psm2_epaddr_t, psm2_epaddr_t> &epsAddr =
       epInfo->remoteEpsAddr;
