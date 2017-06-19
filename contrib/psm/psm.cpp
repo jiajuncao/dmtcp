@@ -64,17 +64,17 @@ static DmtcpBarrier psmBarriers[] = {
     "RESUME_SEND_EP_INFO" },
   { DMTCP_GLOBAL_BARRIER_RESUME, nsQueryData,
     "RESUME_QUERY_EP_INFO" },
-  { DMTCP_GLOBAL_BARRIER_RESUME, refillPhaseOne,
+  { DMTCP_PRIVATE_BARRIER_RESUME, refillPhaseOne,
     "RESUME_REBUILD_CONNECTION" },
-  { DMTCP_GLOBAL_BARRIER_RESUME, refillPhaseTwo, "RESUME_REFILL"},
+  { DMTCP_PRIVATE_BARRIER_RESUME, refillPhaseTwo, "RESUME_REFILL"},
   { DMTCP_PRIVATE_BARRIER_RESTART, postRestart, "RESTART" },
   { DMTCP_GLOBAL_BARRIER_RESTART, nsRegisterData,
     "RESTART_SEND_EP_INFO" },
   { DMTCP_GLOBAL_BARRIER_RESTART, nsQueryData,
     "RESTART_QUERY_EP_INFO" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseOne,
+  { DMTCP_PRIVATE_BARRIER_RESTART, refillPhaseOne,
     "RESTART_REBUILD_CONNECTION" },
-  { DMTCP_GLOBAL_BARRIER_RESTART, refillPhaseTwo, "RESTART_REFILL"}
+  { DMTCP_PRIVATE_BARRIER_RESTART, refillPhaseTwo, "RESTART_REFILL"}
 };
 
 DmtcpPluginDescriptor_t psmPlugin = {
@@ -820,5 +820,15 @@ void PsmList::refill() {
                                recvReq->buf, recvReq->len,
                                recvReq->context, &recvReq->realReq);
     JASSERT(ret == PSM2_OK).Text("Failed to re-post irecv2 request");
+  }
+
+  if (epInfo->connLog.size() < 1) {
+    psm2_error_t err;
+
+    do {
+      err = _real_psm2_poll(epInfo->realEp);
+    } while (err == PSM2_OK_NO_PROGRESS);
+  } else {
+    _real_psm2_poll(epInfo->realEp);
   }
 }

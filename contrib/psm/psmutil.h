@@ -45,7 +45,7 @@ realToVirtualPeer(MqInfo *mqInfo, psm2_epaddr_t peer) {
         break;
       }
     }
-    JASSERT(found);
+    // JASSERT(found);
   }
   return virtualPeer;
 }
