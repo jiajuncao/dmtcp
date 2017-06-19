@@ -868,15 +868,22 @@ psm2_mq_ipeek2(psm2_mq_t mq, psm2_mq_req_t *req,
   return ret;
 }
 
+/*
+ * wait is a blocking call. We internally change it to poll and
+ * test. This may waste some cpu resources, but according to the
+ * spec: it provides the best reponsiveness in terms of latency.
+ * Therefore we do not use any sort of sleep/yield here.
+ */
+
 EXTERNC psm2_error_t
 psm2_mq_wait2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
   psm2_error_t ret;
 
-  DMTCP_PLUGIN_DISABLE_CKPT();
-
-  ret = PsmList::instance().mqWait(request, status);
-
-  DMTCP_PLUGIN_ENABLE_CKPT();
+  do {
+    DMTCP_PLUGIN_DISABLE_CKPT();
+    ret = PsmList::instance().mqCompletion(request, status, true);
+    DMTCP_PLUGIN_ENABLE_CKPT();
+  } while (ret == PSM2_MQ_NO_COMPLETIONS);
 
   return ret;
 }
@@ -887,7 +894,7 @@ psm2_mq_test2(psm2_mq_req_t *request, psm2_mq_status2_t *status) {
 
   DMTCP_PLUGIN_DISABLE_CKPT();
 
-  ret = PsmList::instance().mqTest(request, status);
+  ret = PsmList::instance().mqCompletion(request, status, false);
 
   DMTCP_PLUGIN_ENABLE_CKPT();
 

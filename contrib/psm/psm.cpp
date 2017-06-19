@@ -224,9 +224,10 @@ void PsmList::onMqFinalize(psm2_mq_t mq) {
 
 psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
                                    psm2_mq_status2_t *status,
-                                   CompletionOp op) {
+                                   bool polling) {
   psm2_error_t ret;
   MqInfo *mqInfo;
+  EpInfo *epInfo;
   psm2_mq_req_t realReq;
 
   if (*request == PSM2_MQ_REQINVALID) {
@@ -235,6 +236,8 @@ psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
 
   JASSERT(_mqList.size() == 1);
   mqInfo = _mqList[0];
+  JASSERT(_epList.size() == 1);
+  epInfo = _epList[0];
 
   for (size_t i = 0; i < mqInfo->internalCq.size(); i++) {
     const CompWrapper &completion = mqInfo->internalCq[i];
@@ -252,14 +255,15 @@ psm2_error_t PsmList::mqCompletion(psm2_mq_req_t *request,
     }
   }
 
+  // Ensure progress, see the wrapper for psm2_mq_wait2()
+  if (polling) {
+    _real_psm2_poll(epInfo->realEp);
+  }
+
   // We can cast to any type of the three (send, recv, mprobe),
   // since realReq is the first element of all three structs.
   realReq = ((SendReq *)(*request))->realReq;
-  if (op == WAIT) {
-    ret = _real_psm2_mq_wait2(&realReq, status);
-  } else {
-    ret = _real_psm2_mq_test2(&realReq, status);
-  }
+  ret = _real_psm2_mq_test2(&realReq, status);
 
   if (ret == PSM2_OK) {
     mqInfo->reqCompleted++;

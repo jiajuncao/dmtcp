@@ -175,15 +175,11 @@ namespace dmtcp
 
       // Since mq in not passed in for wait/test/cancel, we need
       // to do the work in PsmList, not the wrappers.
-      psm2_error_t mqWait(psm2_mq_req_t *request,
-                          psm2_mq_status2_t *status) {
-        return mqCompletion(request, status, WAIT);
-      }
-      psm2_error_t mqTest(psm2_mq_req_t *request,
-                          psm2_mq_status2_t *status){
-        return mqCompletion(request, status, TEST);
-      }
       psm2_error_t mqCancel(psm2_mq_req_t *request);
+      // Common operation for wait and test
+      psm2_error_t mqCompletion(psm2_mq_req_t *request,
+                                psm2_mq_status2_t *status,
+                                bool polling);
 
       void drain();
       void sendCompletionInfo();
@@ -205,15 +201,6 @@ namespace dmtcp
       int _numUnits;
       psm2_ep_errhandler_t _globalErrHandler;
 
-      typedef enum {
-        WAIT,
-        TEST
-      } CompletionOp;
-
-      // Common operation for wait and test
-      psm2_error_t mqCompletion(psm2_mq_req_t *request,
-                                psm2_mq_status2_t *status,
-                                CompletionOp op);
   };
 }
 
