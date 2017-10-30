@@ -41,6 +41,7 @@
 #include "shareddata.h"
 #include "util.h"
 #include "pid.h"
+#include "dmtcp_dlsym.h"
 
 using namespace dmtcp;
 
@@ -59,7 +60,7 @@ extern "C" int __register_atfork(void (*prepare)(void), void (*parent)(void),
   /* dmtcp_prepare_wrappers() must be called before __register_atfork().
    * NEXT_FNC() guarantees that dmtcp_prepare_wrappers() is called if
    * it was not called earlier. */
-  return NEXT_FNC(__register_atfork)(prepare, parent, child, dso_handle);
+  return NEXT_FNC_DEFAULT(__register_atfork)(prepare, parent, child, dso_handle);
 }
 
 extern "C" pid_t fork()

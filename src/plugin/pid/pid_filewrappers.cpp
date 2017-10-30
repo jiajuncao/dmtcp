@@ -55,6 +55,7 @@
 #include "virtualpidtable.h"
 #include "dmtcp.h"
 #include "pid.h"
+#include "dmtcp_dlsym.h"
 
 #define PROC_PREFIX "/proc/"
 
@@ -302,7 +303,7 @@ extern "C" int access(const char *path, int mode)
   char tmpbuf[PATH_MAX];
   char *newpath = tmpbuf;
   updateProcPathVirtualToReal(path, &newpath);
-  return NEXT_FNC(access) (newpath, mode);
+  return NEXT_FNC_DEFAULT(access) (newpath, mode);
 }
 
 // TODO:  ioctl must use virtualized pids for request = TIOCGPGRP / TIOCSPGRP
